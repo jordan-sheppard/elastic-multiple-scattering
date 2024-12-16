@@ -531,18 +531,18 @@ class MKFE_FDObstacle(FDObstacle):
     def parse_phi_from_FD_result(self, result) -> Grid:
         # Get vector phi values at gridpoints from results vector
         begin_idx = (
-            self.num_ghost_points_physical_boundary
+            2 * self.num_ghost_points_physical_boundary
             * self.grid.num_angular_gridpoints
-        )
+        )       # Skips angular gridpoints for both phi and psi for any ghost points
         step = self.grid.num_angular_gridpoints
         phi_grid = np.zeros(self.grid.shape, dtype='complex128')
         for r in range(self.grid.num_radial_gridpoints):
             # Parse current radial layer of phi gridpoints
-            end_idx = begin_idx + self.grid.num_angular_gridpoints
-            logging.debug(f"Phi value indexes for radial ring {r}: [{begin_idx}, {end_idx}]")
+            end_idx = begin_idx + step
+            # logging.debug(f"Phi value indexes for radial ring {r}: [{begin_idx}, {end_idx}]")
             phi_grid[:,r] = result[begin_idx:end_idx]
 
-            # Increment to next radial layer (skip psi gridpoints on same layer)
+            # Increment to next radial layer (skipping the psi gridpoints on the current layer)
             begin_idx = end_idx + step
         return phi_grid
 
@@ -552,16 +552,16 @@ class MKFE_FDObstacle(FDObstacle):
 
         step = self.grid.num_angular_gridpoints
         begin_idx = (
-            self.num_ghost_points_physical_boundary
+            2 * self.num_ghost_points_physical_boundary
             * self.grid.num_angular_gridpoints
-        ) + step        # Skips first round of phi gridpoints
+        ) + step        # Skips angular gridpoints for both phi and psi for any ghost points, along with layer of phi gridpoints at physical boundary
         for r in range(self.grid.num_radial_gridpoints):
             # Parse current radial layer of phi gridpoints
-            end_idx = begin_idx + self.grid.num_angular_gridpoints
+            end_idx = begin_idx + step
             logging.debug(f"Psi value indexes for radial ring {r}: [{begin_idx}, {end_idx}]")
             psi_grid[:,r] = result[begin_idx:end_idx]
 
-            # Increment to next radial layer (skip psi gridpoints on same layer)
+            # Increment to next radial layer (skipping the phi gridpoints on the next layer)
             begin_idx = end_idx + step
 
         return psi_grid
@@ -590,10 +590,10 @@ class MKFE_FDObstacle(FDObstacle):
         """
         num_unknown_grid_vals = (
             2 * self.grid.num_gridpoints 
-            + 2 * (
+            + 2 * self.grid.num_angular_gridpoints * (
                 self.num_ghost_points_artificial_boundary 
                 + self.num_ghost_points_physical_boundary
-            ) * self.grid.num_angular_gridpoints
+            ) 
         )
         
         fp_coeffs = np.zeros(
@@ -601,12 +601,12 @@ class MKFE_FDObstacle(FDObstacle):
             dtype='complex128'
         )
         start = num_unknown_grid_vals
-        end = num_unknown_grid_vals + self.grid.num_angular_gridpoints
+        step = self.grid.num_angular_gridpoints
         logging.debug(f"Farfield F_p coeffs start index: {start}")
         for l in range(self.num_farfield_terms):
+            end = start + step
             fp_coeffs[l] = result[start:end]
-            start = end 
-            end += self.grid.num_angular_gridpoints
+            start = end
         logging.debug(f"Farfield F_p coeffs end index: {start}")
         return fp_coeffs
     
@@ -634,10 +634,10 @@ class MKFE_FDObstacle(FDObstacle):
         """
         num_unknown_grid_vals = (
             2 * self.grid.num_gridpoints 
-            + 2 * (
+            + 2 * self.grid.num_angular_gridpoints * (
                 self.num_ghost_points_artificial_boundary 
                 + self.num_ghost_points_physical_boundary
-            ) * self.grid.num_angular_gridpoints
+            )
         )
         num_fp_coeffs = (
             self.num_farfield_terms
@@ -649,12 +649,12 @@ class MKFE_FDObstacle(FDObstacle):
             dtype='complex128'
         )
         start = num_unknown_grid_vals + num_fp_coeffs
-        end = start + self.grid.num_angular_gridpoints
+        step = self.grid.num_angular_gridpoints
         logging.debug(f"Farfield G_p coeffs start index: {start}")
         for l in range(self.num_farfield_terms):
+            end = start + step
             gp_coeffs[l] = result[start:end]
-            start = end 
-            end += self.grid.num_angular_gridpoints
+            start = end
         logging.debug(f"Farfield G_p coeffs end index: {start}")
         return gp_coeffs
     
@@ -682,10 +682,10 @@ class MKFE_FDObstacle(FDObstacle):
         """
         num_unknown_grid_vals = (
             2 * self.grid.num_gridpoints 
-            + 2 * (
+            + 2 * self.grid.num_angular_gridpoints * (
                 self.num_ghost_points_artificial_boundary 
                 + self.num_ghost_points_physical_boundary
-            ) * self.grid.num_angular_gridpoints
+            )
         )
         num_compressional_coeffs = 2 * (
             self.num_farfield_terms
@@ -697,12 +697,12 @@ class MKFE_FDObstacle(FDObstacle):
             dtype='complex128'
         )
         start = num_unknown_grid_vals + num_compressional_coeffs
-        end = start + self.grid.num_angular_gridpoints
+        step = self.grid.num_angular_gridpoints
         logging.debug(f"Farfield F_s coeffs start index: {start}")
         for l in range(self.num_farfield_terms):
+            end = start + step
             fs_coeffs[l] = result[start:end]
             start = end 
-            end += self.grid.num_angular_gridpoints
         logging.debug(f"Farfield F_s coeffs end index: {start}")
         return fs_coeffs
     
@@ -730,10 +730,10 @@ class MKFE_FDObstacle(FDObstacle):
         """
         num_unknown_grid_vals = (
             2 * self.grid.num_gridpoints 
-            + 2 * (
+            + 2 * self.grid.num_angular_gridpoints * (
                 self.num_ghost_points_artificial_boundary 
                 + self.num_ghost_points_physical_boundary
-            ) * self.grid.num_angular_gridpoints
+            )
         )
         num_compressional_coeffs = 2 * (
             self.num_farfield_terms
@@ -752,12 +752,12 @@ class MKFE_FDObstacle(FDObstacle):
             num_unknown_grid_vals + num_compressional_coeffs
             + num_gs_coeffs
         )
+        step = self.grid.num_angular_gridpoints
         logging.debug(f"Farfield G_s coeffs start index: {start}")
-        end = start + self.grid.num_angular_gridpoints
         for l in range(self.num_farfield_terms):
+            end = start + step
             gs_coeffs[l] = result[start:end]
             start = end 
-            end += self.grid.num_angular_gridpoints
         logging.debug(f"Farfield G_s coeffs end index: {start}")
         return gs_coeffs
 
@@ -863,6 +863,7 @@ class MKFE_FDObstacle(FDObstacle):
 
     def plot_phi_contourf(
         self,
+        method:str = 'abs',
         u_inc: Optional[IncidentPlanePWave] = None,
         other_obstacles: Optional[list[Self]] = None,
         **kwargs
@@ -878,6 +879,10 @@ class MKFE_FDObstacle(FDObstacle):
         plotting.
 
         Args:
+            method (str): Whether to plot the complex modulus ('abs'),
+                the real part ('real'), or the imaginary part ('imag')
+                of the psi scattered potential.
+                Default is 'abs'.
             u_inc (IncidentPlanePWave): If provided, the incident
                 plane p-wave on this obstacle.
             other_obstacles (list[Self]): If provided, a list
@@ -887,6 +892,10 @@ class MKFE_FDObstacle(FDObstacle):
                 to use for plotting (cm.coolwarm is used if none
                 is provided)
         """
+        # Clean method 
+        method = method.strip().lower() 
+
+        # Get values to plot
         phi_tot = self.phi_vals
         if u_inc is not None:
             phi_tot += u_inc(self.grid)
@@ -895,17 +904,24 @@ class MKFE_FDObstacle(FDObstacle):
             for obstacle in other_obstacles:
                 phi_tot += obstacle.get_scattered_wave_at_obstacle(self, boundary_only=False)[0]
 
-
         # Plot contour with given color/colormap args
         X_global, Y_global = self.grid.local_coords_to_global_XY()
-        # phi_abs = np.abs(phi_tot)
-        # self._plot_periodic_contourf(X_global, Y_global, phi_abs, **kwargs)
-        phi_real = np.real(phi_tot)
-        self._plot_periodic_contourf(X_global, Y_global, phi_real, **kwargs)
+
+        if method == 'abs':
+            z_vals = np.abs(phi_tot)
+        elif method == 'real':
+            z_vals = np.real(phi_tot)
+        elif method == 'imag':
+            z_vals = np.imag(phi_tot)
+        else:
+            raise ValueError(f"Plotting method {method} not recognized.")
+
+        self._plot_periodic_contourf(X_global, Y_global, z_vals, **kwargs)
 
 
     def plot_psi_contourf(
         self,
+        method:str = 'abs',
         other_obstacles: Optional[list[Self]] = None,
         **kwargs
     ) -> None:
@@ -920,6 +936,10 @@ class MKFE_FDObstacle(FDObstacle):
         plotting.
 
         Args:
+            method (str): Whether to plot the complex modulus ('abs'),
+                the real part ('real'), or the imaginary part ('imag')
+                of the psi scattered potential.
+                Default is 'abs'.
             other_obstacles (list[Self]): If provided, a list
                 of other obstacles whose scattered potentials 
                 are incident upon this obstacle.
@@ -927,16 +947,29 @@ class MKFE_FDObstacle(FDObstacle):
                 to use for plotting (cm.coolwarm is used if none
                 is provided)
         """
+        # Clean the method string 
+        method = method.strip().lower() 
+
         psi_tot = self.psi_vals
-        
         if other_obstacles is not None:
             for obstacle in other_obstacles:
                 psi_tot += obstacle.get_scattered_wave_at_obstacle(self, boundary_only=False)[1]
 
         # Plot contour with given color/colormap args
         X_global, Y_global = self.grid.local_coords_to_global_XY()
-        psi_abs = np.abs(psi_tot)
-        self._plot_periodic_contourf(X_global, Y_global, psi_abs, **kwargs)
+
+        if method.lower() == 'abs':
+            z_vals = np.abs(psi_tot)
+        elif method == 'real':
+            z_vals = np.real(psi_tot)
+        elif method == 'imag':
+            z_vals = np.imag(psi_tot)
+        else:
+            raise ValueError(f"Plotting method {method} not recognized.")
+
+        self._plot_periodic_contourf(X_global, Y_global, z_vals, **kwargs)
+        # psi_real = np.real(psi_tot)
+        # self._plot_periodic_contourf(X_global, Y_global, psi_real, **kwargs)
 
 
     def get_scattered_wave_at_obstacle(
