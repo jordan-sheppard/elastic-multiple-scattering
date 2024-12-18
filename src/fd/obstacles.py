@@ -1571,6 +1571,13 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         corresponding to the field continuity interface condition
         at the artificial boundary.
 
+        NOTE: These interface rows do not directly use the farfield
+        expansions. Instead, they use a scaled form of these, where
+        the division by powers of (kp R) and (ks R) is limited as 
+        much as possible. Thus, results coming from this 
+        farfield expansion should be parsed and scaled 
+        appropriately.
+
         Returns:
             list[sparse.csc_array]: A list of block rows 
                 of the finite-difference matrix corresponding 
@@ -1594,15 +1601,12 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
 
         ## Create repetitive arays 
         I_N_theta = sparse.eye_array(self.num_angular_gridpoints, format='csc')
-        powers = np.arange(self.num_farfield_terms) # l = 0, 1, ..., L-1
         
         ## C.1.A - Continuity of Phi (N_{theta} equations)
         # Create needed constants/arrays of constants specific to phi
-        kp_powers = (kp * self.r_artificial_boundary)**powers
-        J_p = hankel_ord0_kp/kp_powers  # TODO: SCALING VERY BAD HERE 
+        kp_powers = np.ones(self.num_farfield_terms)
+        J_p = hankel_ord0_kp/kp_powers
         K_p = hankel_ord1_kp/kp_powers
-        # J_p = hankel_ord0_kp/(powers + 1)
-        # K_p = hankel_ord1_kp/(powers + 1)
 
         # Create needed FD matrices
         M_J_p = []      # List of sparse arrays
@@ -1628,11 +1632,9 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
 
         ## C.1.B - Continuity of Psi
         # Create needed constants/arrays of constants specific to psi
-        ks_powers = (ks * self.r_artificial_boundary)**powers  # l=0,1,...,L-1
+        ks_powers = np.ones(self.num_farfield_terms)  # l=0,1,...,L-1
         J_s = hankel_ord0_ks/ks_powers
         K_s = hankel_ord1_ks/ks_powers
-        # J_s = hankel_ord0_ks/(powers + 1)
-        # K_s = hankel_ord1_ks/(powers + 1)
 
         # Create needed FD matrices
         M_J_s = []      # List of sparse arrays
@@ -1663,6 +1665,13 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         corresponding to the interface condition of continuity of
         the first radial derivative at the artificial boundary.
 
+        NOTE: These interface rows do not directly use the farfield
+        expansions. Instead, they use a scaled form of these, where
+        the division by powers of (kp R) and (ks R) is limited as 
+        much as possible. Thus, results coming from this 
+        farfield expansion should be parsed and scaled 
+        appropriately.
+
         Returns:
             list[sparse.csc_array]: A list of block rows 
                 of the finite-difference matrix corresponding 
@@ -1691,8 +1700,8 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         # Create repetitive arrays 
         I_N_theta = sparse.eye_array(self.num_angular_gridpoints, format='csc')
 
-        powers_1der = np.arange(self.num_farfield_terms)    # l=0,1,...,L-1
-        powers_1der_plus1 = powers_1der + 1                 # l+1, where l=0,1,...,L-1
+        powers_1der = np.zeros(self.num_farfield_terms)
+        powers_1der_plus1 = powers_1der + 1
 
         Z_plus = z_plus * I_N_theta
         Z_minus = z_minus * I_N_theta
@@ -1708,7 +1717,7 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         B_p = (
             (-kp * powers_1der_plus1 * hankel_ord1_kp / kp_powers_1der_plus1)
             + (kp * hankel_ord0_kp / kp_powers_1der)
-        )       # TODO: VERY BAD SCALING HERE 
+        )
 
         # Create FD matrices
         M_A_p = []
@@ -1783,6 +1792,13 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         corresponding to the interface condition of continuity of
         the first radial derivative at the artificial boundary.
 
+        NOTE: These interface rows do not directly use the farfield
+        expansions. Instead, they use a scaled form of these, where
+        the division by powers of (kp R) and (ks R) is limited as 
+        much as possible. Thus, results coming from this 
+        farfield expansion should be parsed and scaled 
+        appropriately.
+
         Returns:
             list[sparse.csc_array]: A list of block rows 
                 of the finite-difference matrix corresponding 
@@ -1811,10 +1827,9 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         ## Create repetitive arays 
         I_N_theta = sparse.eye_array(self.num_angular_gridpoints, format='csc')
 
-        powers_2der = np.arange(self.num_farfield_terms)    # l = 0, 1, ..., L-1
-        powers_2der_plus1 = powers_2der + 1                 # l+1, where l = 0, 1, ..., L-1
-        powers_2der_plus2 = powers_2der + 2                 # l+2, where l = 0, 1, ..., L-1
-
+        powers_2der = np.zeros(self.num_farfield_terms)
+        powers_2der_plus1 = powers_2der + 1
+        powers_2der_plus2 = powers_2der + 2
         Q_plus = q_plus * I_N_theta
         Q_minus = q_minus * I_N_theta
 
@@ -1834,19 +1849,6 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
             -(kp**2 * (2 * powers_2der + 1) * hankel_ord0_kp)/kp_powers_2der_plus1
             + (kp**2 * powers_2der_plus1 * powers_2der_plus2 * hankel_ord1_kp)/kp_powers_2der_plus2
         ) # TODO: SHOULD THE FIRST SUBTRACTION BE AN ADDITION??? ACCORDING TO DANE, YES. MY DERIVATION SAYS NO.
-        
-        # TODO: VERY BAD SCALING HERE 
-        
-        # C_p = (
-        #     -(kp**2 * hankel_ord0_kp)/powers_2der
-        #     + (kp**2 * (2 * powers_2der + 1) * hankel_ord1_kp)
-        #     + (kp**2 * powers_2der * powers_2der_plus1 * hankel_ord0_kp)
-        # ) 
-        # D_p = (
-        #     -(kp**2 * hankel_ord1_kp)/powers_2der
-        #     - (kp**2 * (2 * powers_2der + 1) * hankel_ord0_kp)
-        #     + (kp**2 * powers_2der_plus1 * powers_2der_plus2 * hankel_ord1_kp)
-        # ) 
 
         # Create FD matrices 
         M_C_p = []
@@ -1890,16 +1892,6 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
             -(ks**2 * (2 * powers_2der + 1) * hankel_ord0_ks)/ks_powers_2der_plus1
             + (ks**2 * powers_2der_plus1 * powers_2der_plus2 * hankel_ord1_ks)/ks_powers_2der_plus2
         ) # TODO: SHOULD THE FIRST SUBTRACTION BE AN ADDITION??? ACCORDING TO DANE, YES. MY DERIVATION SAYS NO.
-        # C_s = (
-        #     -(ks**2 * hankel_ord0_ks)/powers_2der
-        #     + (ks**2 * (2 * powers_2der + 1) * hankel_ord1_ks)
-        #     + (ks**2 * powers_2der * powers_2der_plus1 * hankel_ord0_ks)
-        # ) 
-        # D_s = (
-        #     -(ks**2 * hankel_ord1_ks)/powers_2der
-        #     + (ks**2 * (2 * powers_2der + 1) * hankel_ord0_ks)
-        #     + (ks**2 * powers_2der_plus1 * powers_2der_plus2 * hankel_ord1_ks)
-        # )
 
         M_C_s = []
         M_D_s = []
