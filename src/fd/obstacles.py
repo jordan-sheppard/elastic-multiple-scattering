@@ -1942,13 +1942,20 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         fd_matrix_block_rows = []    # For storing output equation rows
 
         # Parse needed constants and arrays of constants
-        dtheta = self.grid.dtheta 
+        dtheta = self.grid.dtheta
+        kp = self.parent_medium.kp
+        ks = self.parent_medium.ks
+        R = self.r_artificial_boundary
+        kpR = kp * R 
+        ksR = ks * R
         l = np.arange(1, self.num_farfield_terms)
         t_plus = 1/(dtheta**2)
         t_F = -2/(dtheta**2) + (l-1)**2
         t_G = -2/(dtheta**2) + l**2 
-        s_F = -2 * l
-        s_G = 2 * l
+        s_Fp = -2 * l * kpR                 # NOTE: SCALING by kpR or ksR HERE IS FROM MATLAB CODE
+        s_Fs = -2 * l * ksR 
+        s_Gp = 2 * l * kpR
+        s_Gs = 2 * l * ksR
         recursive_relation_block_shape = (2 * self.num_angular_gridpoints, self.num_unknowns)
         num_r_gridpts = self.grid.num_radial_gridpoints
 
@@ -1956,16 +1963,20 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         I_N_Theta = sparse.eye_array(self.num_angular_gridpoints, format='csc')
 
         # Iterate through all the l index values to create appropriate rows
-        for i, (t_l_F, t_l_G, s_l_F, s_l_G) in enumerate(zip(t_F, t_G, s_F, s_G)):
+        for i, (t_l_F, t_l_G, s_l_Fp, s_l_Gp, s_l_Fs, s_l_Gs) in enumerate(zip(t_F, t_G, s_Fp, s_Gp, s_Fs, s_Gs)):
             # Create smaller FD subarrays
             T_l_F = sparse_periodic_tridiag(self.num_angular_gridpoints, t_l_F, t_plus, t_plus)
             T_l_G = sparse_periodic_tridiag(self.num_angular_gridpoints, t_l_G, t_plus, t_plus)
-            S_l_F = s_l_F * I_N_Theta
-            S_l_G = s_l_G * I_N_Theta 
+            S_l_F_p = s_l_Fp * I_N_Theta
+            S_l_G_p = s_l_Gp * I_N_Theta
+            S_l_F_s = s_l_Fs * I_N_Theta
+            S_l_G_s = s_l_Gs * I_N_Theta 
 
             # Combine smaller subarrays to create bigger subarrays 
-            A_rec_l = sparse.block_diag([T_l_F, S_l_G], format='csc')
-            Z_rec_l = sparse_block_antidiag([T_l_G, S_l_F])
+            A_rec_l_p = sparse.block_diag([T_l_F, S_l_G_p], format='csc')
+            Z_rec_l_p = sparse_block_antidiag([T_l_G, S_l_F_p])
+            A_rec_l_s = sparse.block_diag([T_l_F, S_l_G_s], format='csc')
+            Z_rec_l_s = sparse_block_antidiag([T_l_G, S_l_F_s])
 
             ## D.1-D.2: p-recursive relations
             # Get block rows
@@ -1983,11 +1994,11 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
 
             if num_zeros_right == 0:
                 block_data = (
-                    [num_zeros_left, A_rec_l, num_zeros_middle, Z_rec_l]
+                    [num_zeros_left, A_rec_l_p, num_zeros_middle, Z_rec_l_p]
                 )
             else:
                 block_data = (
-                    [num_zeros_left, A_rec_l, num_zeros_middle, Z_rec_l, num_zeros_right]
+                    [num_zeros_left, A_rec_l_p, num_zeros_middle, Z_rec_l_p, num_zeros_right]
                 )
 
             block_rows = sparse_block_row(
@@ -2013,11 +2024,11 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
             )
             if num_zeros_right == 0:
                 block_data = (
-                    [num_zeros_left, A_rec_l, num_zeros_middle, Z_rec_l]
+                    [num_zeros_left, A_rec_l_s, num_zeros_middle, Z_rec_l_s]
                 )
             else:
                 block_data = (
-                    [num_zeros_left, A_rec_l, num_zeros_middle, Z_rec_l, num_zeros_right]
+                    [num_zeros_left, A_rec_l_s, num_zeros_middle, Z_rec_l_s, num_zeros_right]
                 )
 
             block_rows = sparse_block_row(
