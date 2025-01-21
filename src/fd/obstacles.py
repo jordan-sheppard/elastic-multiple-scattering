@@ -1973,8 +1973,8 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         t_plus = 1/(dtheta**2)
         t_F = -2/(dtheta**2) + (l_idxs-1)**2
         t_G = -2/(dtheta**2) + l_idxs**2 
-        s_F = 2 * l_idxs
-        s_G = -2 * l_idxs
+        s_F = -2 * l_idxs
+        s_G = 2 * l_idxs
         recursive_relation_block_shape = (2 * self.num_angular_gridpoints, self.num_unknowns)
         num_r_gridpts = self.grid.num_radial_gridpoints
 
