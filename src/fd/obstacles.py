@@ -1571,6 +1571,13 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         corresponding to the field continuity interface condition
         at the artificial boundary.
 
+        NOTE: These interface rows do not directly use the farfield
+        expansions. Instead, they use a scaled form of these, where
+        the division by powers of (kp R) and (ks R) is limited as 
+        much as possible. Thus, results coming from this 
+        farfield expansion should be parsed and scaled 
+        appropriately.
+
         Returns:
             list[sparse.csc_array]: A list of block rows 
                 of the finite-difference matrix corresponding 
@@ -1585,25 +1592,26 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         ## Parse constants 
         kp = self.parent_medium.kp
         ks = self.parent_medium.ks
-        hankel_ord0_kp = hankel1(0, kp * self.r_artificial_boundary)
-        hankel_ord1_kp = hankel1(1, kp * self.r_artificial_boundary)
-        hankel_ord0_ks = hankel1(0, ks * self.r_artificial_boundary)
-        hankel_ord1_ks = hankel1(1, ks * self.r_artificial_boundary)
+        R = self.r_artificial_boundary
+        kpR = kp * R
+        ksR = ks * R
+        Hp0 = hankel1(0, kpR)
+        Hp1 = hankel1(1, kpR)
+        Hs0 = hankel1(0, ksR)
+        Hs1 = hankel1(1, ksR)
         interface_block_row_shape = (self.num_angular_gridpoints, self.num_unknowns)
         num_r_gridpts = self.grid.num_radial_gridpoints
 
+        ## Create arrays of coefficients to insert into FD submatrices
+        J_p = np.repeat(Hp0, self.num_farfield_terms)
+        K_p = np.repeat(Hp1, self.num_farfield_terms)
+        J_s = np.repeat(Hs0, self.num_farfield_terms)
+        K_s = np.repeat(Hs1, self.num_farfield_terms)
+
         ## Create repetitive arays 
         I_N_theta = sparse.eye_array(self.num_angular_gridpoints, format='csc')
-        powers = np.arange(self.num_farfield_terms) # l = 0, 1, ..., L-1
         
-        ## C.1.A - Continuity of Phi (N_{theta} equations)
-        # Create needed constants/arrays of constants specific to phi
-        kp_powers = (kp * self.r_artificial_boundary)**powers
-        J_p = hankel_ord0_kp/kp_powers  # TODO: SCALING VERY BAD HERE 
-        K_p = hankel_ord1_kp/kp_powers
-        # J_p = hankel_ord0_kp/(powers + 1)
-        # K_p = hankel_ord1_kp/(powers + 1)
-
+        ## C.1.A - Continuity of Phi
         # Create needed FD matrices
         M_J_p = []      # List of sparse arrays
         M_K_p = []      # List of sparse arrays
@@ -1627,13 +1635,6 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         fd_matrix_block_rows.append(phi_continuity_block_rows)
 
         ## C.1.B - Continuity of Psi
-        # Create needed constants/arrays of constants specific to psi
-        ks_powers = (ks * self.r_artificial_boundary)**powers  # l=0,1,...,L-1
-        J_s = hankel_ord0_ks/ks_powers
-        K_s = hankel_ord1_ks/ks_powers
-        # J_s = hankel_ord0_ks/(powers + 1)
-        # K_s = hankel_ord1_ks/(powers + 1)
-
         # Create needed FD matrices
         M_J_s = []      # List of sparse arrays
         M_K_s = []      # List of sparse arrays
@@ -1663,6 +1664,13 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         corresponding to the interface condition of continuity of
         the first radial derivative at the artificial boundary.
 
+        NOTE: These interface rows do not directly use the farfield
+        expansions. Instead, they use a scaled form of these, where
+        the division by powers of (kp R) and (ks R) is limited as 
+        much as possible. Thus, results coming from this 
+        farfield expansion should be parsed and scaled 
+        appropriately.
+
         Returns:
             list[sparse.csc_array]: A list of block rows 
                 of the finite-difference matrix corresponding 
@@ -1677,40 +1685,43 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         # Parse constants 
         kp = self.parent_medium.kp
         ks = self.parent_medium.ks
+        R = self.r_artificial_boundary
+        kpR = kp * R
+        ksR = ks * R
         dr = self.grid.dr
-        hankel_ord0_kp = hankel1(0, kp * self.r_artificial_boundary)
-        hankel_ord1_kp = hankel1(1, kp * self.r_artificial_boundary)
-        hankel_ord0_ks = hankel1(0, ks * self.r_artificial_boundary)
-        hankel_ord1_ks = hankel1(1, ks * self.r_artificial_boundary)
+        Hp0 = hankel1(0, kpR)
+        Hp1 = hankel1(1, kpR)
+        Hs0 = hankel1(0, ksR)
+        Hs1 = hankel1(1, ksR)
         interface_block_row_shape = (self.num_angular_gridpoints, self.num_unknowns)
         num_r_gridpts = self.grid.num_radial_gridpoints
+        l = np.arange(self.num_farfield_terms)          # l = 0, 1, ..., L-1
 
+        # Create needed coefficients for entries in arrays
         z_plus = 1/(2 * dr)
         z_minus = -1/(2 * dr)
+        A_p = -kp * (
+            Hp1 + (l * Hp0/kpR)
+        )
+        B_p = -kp * (
+            -Hp0 + ((l+1) * Hp1/kpR)
+        )
+        A_s = -ks * (
+            Hs1 + (l * Hs0/ksR)
+        )
+        B_s = -ks * (
+            -Hs0 + ((l+1) * Hs1/ksR)
+        )
 
         # Create repetitive arrays 
         I_N_theta = sparse.eye_array(self.num_angular_gridpoints, format='csc')
 
-        powers_1der = np.arange(self.num_farfield_terms)    # l=0,1,...,L-1
-        powers_1der_plus1 = powers_1der + 1                 # l+1, where l=0,1,...,L-1
-
+        # FD submatrices for phi/psi at radial N-1 and N+1 central 1st radial derivative
         Z_plus = z_plus * I_N_theta
         Z_minus = z_minus * I_N_theta
 
-        ## C.2.A Continuity of First Radial Derivative of phi
-        # Create needed constants/arrays of constants specific to phi
-        kp_powers_1der = (kp * self.r_artificial_boundary)**powers_1der
-        kp_powers_1der_plus1 = (kp * self.r_artificial_boundary)**powers_1der_plus1
-        A_p = (
-            (-kp * hankel_ord1_kp / kp_powers_1der) 
-            - (kp * powers_1der * hankel_ord0_kp / kp_powers_1der_plus1)
-        )
-        B_p = (
-            (-kp * powers_1der_plus1 * hankel_ord1_kp / kp_powers_1der_plus1)
-            + (kp * hankel_ord0_kp / kp_powers_1der)
-        )       # TODO: VERY BAD SCALING HERE 
-
-        # Create FD matrices
+        ## FD submatrices for farfield coefficients 1st radial derivative
+        # phi continuity - p coefficients
         M_A_p = []
         M_B_p = []
         for A_l_p, B_l_p in zip(A_p, B_p):
@@ -1719,7 +1730,6 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
             M_A_p.append(M_A_l_p)
             M_B_p.append(M_B_l_p)
 
-        # Create block rows
         num_zeros_left = 2 * self.num_angular_gridpoints * (num_r_gridpts - 1)
         num_zeros_between_1 = 3 * self.num_angular_gridpoints
         num_zeros_between_2 = self.num_angular_gridpoints
@@ -1737,21 +1747,7 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         )
         fd_matrix_block_rows.append(phi_1der_continuity_block_rows)
 
-        ## C.2.B Continuity of First Radial Derivative of psi
-        # Create needed constants/arrays of constants specific to psi
-        ks_powers_1der = (ks * self.r_artificial_boundary)**powers_1der
-        ks_powers_1der_plus1 = (ks * self.r_artificial_boundary)**powers_1der_plus1
-
-        A_s = (
-            (-ks * hankel_ord1_ks / ks_powers_1der) 
-            - (ks * powers_1der * hankel_ord0_ks / ks_powers_1der_plus1)
-        )
-        B_s = (
-            (-ks * powers_1der_plus1 * hankel_ord1_ks / ks_powers_1der_plus1)
-            + (ks * hankel_ord0_ks / ks_powers_1der)
-        )
-
-        # Create FD matrices
+        # psi continuity - s coefficients
         M_A_s = []
         M_B_s = []
         for A_l_s, B_l_s in zip(A_s, B_s):
@@ -1783,6 +1779,13 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         corresponding to the interface condition of continuity of
         the first radial derivative at the artificial boundary.
 
+        NOTE: These interface rows do not directly use the farfield
+        expansions. Instead, they use a scaled form of these, where
+        the division by powers of (kp R) and (ks R) is limited as 
+        much as possible. Thus, results coming from this 
+        farfield expansion should be parsed and scaled 
+        appropriately.
+
         Returns:
             list[sparse.csc_array]: A list of block rows 
                 of the finite-difference matrix corresponding 
@@ -1797,58 +1800,45 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         # Parse constants 
         kp = self.parent_medium.kp
         ks = self.parent_medium.ks
+        R = self.r_artificial_boundary
+        kpR = kp * R
+        ksR = ks * R
         dr = self.grid.dr
-        hankel_ord0_kp = hankel1(0, kp * self.r_artificial_boundary)
-        hankel_ord1_kp = hankel1(1, kp * self.r_artificial_boundary)
-        hankel_ord0_ks = hankel1(0, ks * self.r_artificial_boundary)
-        hankel_ord1_ks = hankel1(1, ks * self.r_artificial_boundary)
+        Hp0 = hankel1(0, kpR)
+        Hp1 = hankel1(1, kpR)
+        Hs0 = hankel1(0, ksR)
+        Hs1 = hankel1(1, ksR)
         interface_block_row_shape = (self.num_angular_gridpoints, self.num_unknowns)
         num_r_gridpts = self.grid.num_radial_gridpoints
+        l = np.arange(self.num_farfield_terms)          # l = 0, 1, ..., L-1
 
+        # Create coefficients for insertion into FD submatrices
         q_minus = -1/(dr**2)
         q_plus = 2/(dr**2)
+        C_p = kp**2 * (
+            -Hp0 + ((2*l + 1) * Hp1 / kpR) + (l * (l+1) * Hp0 / (kpR**2))
+        )
+        D_p = kp**2 * (
+            -Hp1 - ((2*l + 1) * Hp0 / kpR) + ((l+1) * (l+2) * Hp1 / (kpR**2))
+        )
+        C_s = ks**2 * (
+            -Hs0 + ((2*l + 1) * Hs1 / ksR) + (l * (l+1) * Hs0 / (ksR**2))
+        )
+        D_s = kp**2 * (
+            -Hs1 - ((2*l + 1) * Hs0 / ksR) + ((l+1) * (l+2) * Hs1 / (ksR**2))
+        )
 
-        ## Create repetitive arays 
+        # Create repetitive arays 
         I_N_theta = sparse.eye_array(self.num_angular_gridpoints, format='csc')
 
-        powers_2der = np.arange(self.num_farfield_terms)    # l = 0, 1, ..., L-1
-        powers_2der_plus1 = powers_2der + 1                 # l+1, where l = 0, 1, ..., L-1
-        powers_2der_plus2 = powers_2der + 2                 # l+2, where l = 0, 1, ..., L-1
-
+        # FD submatrices for gridpoints at radial levels Nr-1, Nr, and Nr+1
+        # for 2nd radial derivative
         Q_plus = q_plus * I_N_theta
         Q_minus = q_minus * I_N_theta
 
-        ## C.3.A Continuity of Second Radial Derivative of phi
-        # Parse needed constants/arrays of constants specific to phi
-        kp_powers_2der = (kp * self.r_artificial_boundary)**powers_2der
-        kp_powers_2der_plus1 = (kp * self.r_artificial_boundary)**powers_2der_plus1
-        kp_powers_2der_plus2 = (kp * self.r_artificial_boundary)**powers_2der_plus2
-
-        C_p = (
-            -(kp**2 * hankel_ord0_kp)/kp_powers_2der
-            + (kp**2 * (2 * powers_2der + 1) * hankel_ord1_kp)/kp_powers_2der_plus1
-            + (kp**2 * powers_2der * powers_2der_plus1 * hankel_ord0_kp)/kp_powers_2der_plus2
-        ) 
-        D_p = (
-            -(kp**2 * hankel_ord1_kp)/kp_powers_2der
-            -(kp**2 * (2 * powers_2der + 1) * hankel_ord0_kp)/kp_powers_2der_plus1
-            + (kp**2 * powers_2der_plus1 * powers_2der_plus2 * hankel_ord1_kp)/kp_powers_2der_plus2
-        ) # TODO: SHOULD THE FIRST SUBTRACTION BE AN ADDITION??? ACCORDING TO DANE, YES. MY DERIVATION SAYS NO.
-        
-        # TODO: VERY BAD SCALING HERE 
-        
-        # C_p = (
-        #     -(kp**2 * hankel_ord0_kp)/powers_2der
-        #     + (kp**2 * (2 * powers_2der + 1) * hankel_ord1_kp)
-        #     + (kp**2 * powers_2der * powers_2der_plus1 * hankel_ord0_kp)
-        # ) 
-        # D_p = (
-        #     -(kp**2 * hankel_ord1_kp)/powers_2der
-        #     - (kp**2 * (2 * powers_2der + 1) * hankel_ord0_kp)
-        #     + (kp**2 * powers_2der_plus1 * powers_2der_plus2 * hankel_ord1_kp)
-        # ) 
-
-        # Create FD matrices 
+        ## FD submatrices for phi/p-coefficient farfield coefficients
+        ## for 2nd radial derivative
+        # Create FD submatrices 
         M_C_p = []
         M_D_p = []
         for C_l_p, D_l_p in zip(C_p, D_p):
@@ -1874,33 +1864,9 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         )
         fd_matrix_block_rows.append(phi_2der_continuity_block_rows)
 
-        ## C.3.B Continuity of Second Radial Derivative of psi
-        # Parse needed constants/arrays of constants specific to psi
-        ks_powers_2der = (ks * self.r_artificial_boundary)**powers_2der
-        ks_powers_2der_plus1 = (ks * self.r_artificial_boundary)**powers_2der_plus1
-        ks_powers_2der_plus2 = (ks * self.r_artificial_boundary)**powers_2der_plus2
-
-        C_s = (
-            -(ks**2 * hankel_ord0_ks)/ks_powers_2der
-            + (ks**2 * (2 * powers_2der + 1) * hankel_ord1_ks)/ks_powers_2der_plus1
-            + (ks**2 * powers_2der * powers_2der_plus1 * hankel_ord0_ks)/ks_powers_2der_plus2
-        ) 
-        D_s = (
-            -(ks**2 * hankel_ord1_ks)/ks_powers_2der
-            -(ks**2 * (2 * powers_2der + 1) * hankel_ord0_ks)/ks_powers_2der_plus1
-            + (ks**2 * powers_2der_plus1 * powers_2der_plus2 * hankel_ord1_ks)/ks_powers_2der_plus2
-        ) # TODO: SHOULD THE FIRST SUBTRACTION BE AN ADDITION??? ACCORDING TO DANE, YES. MY DERIVATION SAYS NO.
-        # C_s = (
-        #     -(ks**2 * hankel_ord0_ks)/powers_2der
-        #     + (ks**2 * (2 * powers_2der + 1) * hankel_ord1_ks)
-        #     + (ks**2 * powers_2der * powers_2der_plus1 * hankel_ord0_ks)
-        # ) 
-        # D_s = (
-        #     -(ks**2 * hankel_ord1_ks)/powers_2der
-        #     + (ks**2 * (2 * powers_2der + 1) * hankel_ord0_ks)
-        #     + (ks**2 * powers_2der_plus1 * powers_2der_plus2 * hankel_ord1_ks)
-        # )
-
+        ## FD submatrices for psi/s-coefficient farfield coefficients
+        ## for 2nd radial derivative
+        # Create FD submatrices
         M_C_s = []
         M_D_s = []
         for C_l_s, D_l_s in zip(C_s, D_s):
@@ -1976,13 +1942,20 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         fd_matrix_block_rows = []    # For storing output equation rows
 
         # Parse needed constants and arrays of constants
-        dtheta = self.grid.dtheta 
-        l_idxs = np.arange(1, self.num_farfield_terms)
+        dtheta = self.grid.dtheta
+        kp = self.parent_medium.kp
+        ks = self.parent_medium.ks
+        R = self.r_artificial_boundary
+        kpR = kp * R 
+        ksR = ks * R
+        l = np.arange(1, self.num_farfield_terms)
         t_plus = 1/(dtheta**2)
-        t_F = -2/(dtheta**2) + (l_idxs-1)**2
-        t_G = -2/(dtheta*82) + l_idxs**2 
-        s_F = 2 * l_idxs
-        s_G = -2 * l_idxs
+        t_F = -2/(dtheta**2) + (l-1)**2
+        t_G = -2/(dtheta**2) + l**2 
+        s_Fp = -2 * l * kpR                 # NOTE: SCALING by kpR or ksR HERE IS FROM MATLAB CODE
+        s_Fs = -2 * l * ksR 
+        s_Gp = 2 * l * kpR
+        s_Gs = 2 * l * ksR
         recursive_relation_block_shape = (2 * self.num_angular_gridpoints, self.num_unknowns)
         num_r_gridpts = self.grid.num_radial_gridpoints
 
@@ -1990,16 +1963,20 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         I_N_Theta = sparse.eye_array(self.num_angular_gridpoints, format='csc')
 
         # Iterate through all the l index values to create appropriate rows
-        for i, (t_l_F, t_l_G, s_l_F, s_l_G) in enumerate(zip(t_F, t_G, s_F, s_G)):
+        for i, (t_l_F, t_l_G, s_l_Fp, s_l_Gp, s_l_Fs, s_l_Gs) in enumerate(zip(t_F, t_G, s_Fp, s_Gp, s_Fs, s_Gs)):
             # Create smaller FD subarrays
             T_l_F = sparse_periodic_tridiag(self.num_angular_gridpoints, t_l_F, t_plus, t_plus)
             T_l_G = sparse_periodic_tridiag(self.num_angular_gridpoints, t_l_G, t_plus, t_plus)
-            S_l_F = s_l_F * I_N_Theta
-            S_l_G = s_l_G * I_N_Theta 
+            S_l_F_p = s_l_Fp * I_N_Theta
+            S_l_G_p = s_l_Gp * I_N_Theta
+            S_l_F_s = s_l_Fs * I_N_Theta
+            S_l_G_s = s_l_Gs * I_N_Theta 
 
             # Combine smaller subarrays to create bigger subarrays 
-            A_rec_l = sparse.block_diag([T_l_F, S_l_G], format='csc')
-            Z_rec_l = sparse_block_antidiag([T_l_G, S_l_F])
+            A_rec_l_p = sparse.block_diag([T_l_F, S_l_G_p], format='csc')
+            Z_rec_l_p = sparse_block_antidiag([T_l_G, S_l_F_p])
+            A_rec_l_s = sparse.block_diag([T_l_F, S_l_G_s], format='csc')
+            Z_rec_l_s = sparse_block_antidiag([T_l_G, S_l_F_s])
 
             ## D.1-D.2: p-recursive relations
             # Get block rows
@@ -2017,11 +1994,11 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
 
             if num_zeros_right == 0:
                 block_data = (
-                    [num_zeros_left, A_rec_l, num_zeros_middle, Z_rec_l]
+                    [num_zeros_left, A_rec_l_p, num_zeros_middle, Z_rec_l_p]
                 )
             else:
                 block_data = (
-                    [num_zeros_left, A_rec_l, num_zeros_middle, Z_rec_l, num_zeros_right]
+                    [num_zeros_left, A_rec_l_p, num_zeros_middle, Z_rec_l_p, num_zeros_right]
                 )
 
             block_rows = sparse_block_row(
@@ -2047,11 +2024,11 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
             )
             if num_zeros_right == 0:
                 block_data = (
-                    [num_zeros_left, A_rec_l, num_zeros_middle, Z_rec_l]
+                    [num_zeros_left, A_rec_l_s, num_zeros_middle, Z_rec_l_s]
                 )
             else:
                 block_data = (
-                    [num_zeros_left, A_rec_l, num_zeros_middle, Z_rec_l, num_zeros_right]
+                    [num_zeros_left, A_rec_l_s, num_zeros_middle, Z_rec_l_s, num_zeros_right]
                 )
 
             block_rows = sparse_block_row(

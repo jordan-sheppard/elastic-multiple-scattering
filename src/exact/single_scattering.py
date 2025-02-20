@@ -28,6 +28,10 @@ def exact_solution_hard(
     # Check for circular obstacle
     if not isinstance(obstacle, Circular_MKFE_FDObstacle):
         raise TypeError("ERROR: Exact solution only defined for circular obstacles")
+
+    # Check for positive-x direction incident wave
+    if not np.allclose(incident_wave.phi, 0):
+        raise ValueError("ERROR: Exact solution only defined for incident waves propogating in the positive-x direction (phi=0)")
     
     # Check for center to be at origin
     if not (np.allclose(obstacle.center_global[0], 0) and np.allclose(obstacle.center_global[1], 0)):
