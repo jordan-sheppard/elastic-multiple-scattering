@@ -1,12 +1,13 @@
+from typing import Optional
 from scipy.interpolate import BarycentricInterpolator
 import numpy as np
 
 
 class PeriodicInterpolator1D:
-    """A 3rd-Order Lagrange Interpolation scheme for a periodic
+    """A 5th-Order Lagrange Interpolation scheme for a periodic
     function.
 
-    Uses 4 points on each potential subinterval for 3rd-order
+    Uses 6 points on each potential subinterval for 5th-order
     polynomial interpolation for any point lying in that subinterval.
     
     Attributes:
@@ -21,7 +22,7 @@ class PeriodicInterpolator1D:
             collection of Barycentric Lagrange interpolators, one
             correspnding to each of the potential subintervals
             on the periodic domain, which are configured to use 
-            3rd-order Barycentric Lagrange interpolation.
+            5th-order Barycentric Lagrange interpolation.
     """
     def __init__(
         self,
@@ -33,7 +34,7 @@ class PeriodicInterpolator1D:
         
         Parameters:
             periodic_domain (tuple[float, float]): The domain [xL, xR]
-                on which the function is periodic
+                on which the function is periodic.
             xi (np.ndarray): A 1D array of interpolation points
                 (should be sorted)
         """
@@ -54,8 +55,8 @@ class PeriodicInterpolator1D:
 
     def _initialize_interpolation_schemes(self):
         """Initializes Barycentric Lagrange interpolation schemes on each
-        subinterval of the interpolaion points in self.xi, using 4 surrounding
-        points for a 3rd-order scheme.
+        subinterval of the interpolaion points in self.xi, using 6 surrounding
+        points for a 5rd-order scheme.
         
         Populates self.interpolation_schemes[q] with the interpolation scheme
         to use in the subinterval [xi[q], xi[q+1]].
@@ -64,13 +65,13 @@ class PeriodicInterpolator1D:
         for q in range(self.num_pts):
             # Handle endpoints carefully for interpolation purposes
             left_wraparound_pts = [
-                self.xi[i] - self.xR for i in range(q-1, q+3) if i < 0
+                self.xi[i] - self.xR for i in range(q-2, q+4) if i < 0
             ]
             normal_pts = [
-                self.xi[i] for i in range(q-1, q+3) if i >= 0 and i < self.num_pts
+                self.xi[i] for i in range(q-2, q+4) if i >= 0 and i < self.num_pts
             ]
             right_wraparound_pts = [
-                self.xR + self.xi[i%self.num_pts] for i in range(q-1, q+3) if i >= self.num_pts
+                self.xR + self.xi[i%self.num_pts] for i in range(q-2, q+4) if i >= self.num_pts
             ]
             interp_xpts = np.array(
                 left_wraparound_pts + normal_pts + right_wraparound_pts
@@ -100,22 +101,26 @@ class PeriodicInterpolator1D:
         # Update function values for all interpolation points.
         for q in range(self.num_pts):
             interp_ypts = np.array(
-                [new_func_vals[i % self.num_pts] for i in range(q-1, q+3)]
+                [new_func_vals[i % self.num_pts] for i in range(q-2, q+4)]
             )
             self.interpolation_schemes[q].set_yi(interp_ypts, axis=0)
 
     def interpolate(
         self,
-        x: np.ndarray
+        x: np.ndarray,
+        der: Optional[int] = None
     ) -> np.ndarray:
         """Interpolate the function values at the given x values
-        using a degree-3 Barycentric Lagrange polynomial at the 
-        nearest 4 interpolation points (taking into account
+        using a degree-5 Barycentric Lagrange polynomial at the 
+        nearest 6 interpolation points (taking into account
         periodicity).
 
         Args:
             x (np.ndarray): The inputs to the function which we'd like
                 approximate/interpolated outputs for.
+            der (int): The number of the derivative we would like to 
+                interpolate. If no derivative provided, by default,
+                the function values itself are interpolated
 
         Returns:
             np.ndarray: With shape (*x_shape, *y_shape), where x_shape
@@ -151,12 +156,12 @@ class PeriodicInterpolator1D:
         # Now, iterate over "closest" points and interpolate accordingly
         for q in range(self.num_pts):
             mask = (idx_closest_left_pt == q)
-            output_pts[mask] = self.interpolation_schemes[q](shifted_x[mask])
-        
+            if der is None:
+                der = 0             # Interpolate the 0th derivative by default, AKA the original function
+            
+            output_pts[mask] = self.interpolation_schemes[q].derivative(shifted_x[mask], der)
+
         return output_pts 
-
-
-
 
 
 
