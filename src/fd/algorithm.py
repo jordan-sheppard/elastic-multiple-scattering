@@ -6,7 +6,7 @@ from ..base.medium import LinearElasticMedium
 from ..base.waves import IncidentPlanePWave
 from ..base.exceptions import MaxIterationsExceedException
 from ..base.consts import Algorithm
-from .grids import FDGrid_Polar_Art_Bndry
+from .grids import FDPolarGrid_ArtBndry
 from .obstacles import (
     MKFE_FDObstacle, Circular_MKFE_FDObstacle,
     CircularObstacleGeometry
@@ -32,10 +32,6 @@ class MKFE_FD_ScatteringProblem:
             wave for this scattering problem 
         num_farfield_terms (int): The number of terms in the
             farfield expansion to use at each obstacle
-        num_angular_gridpoints (int): The number of "angular"
-            gridpoints to use in each obstacle's grid (that is,
-            the number of gridpoints along the axis that will
-            not be affected by changes in PPW)
         circular_obstacle_geometries (list[CircularObstacleGeometry]): A
             list of circular obstacle geometry information (including
             center locations, radii of obstacle and artificial
@@ -51,7 +47,6 @@ class MKFE_FD_ScatteringProblem:
         medium: LinearElasticMedium,
         incident_wave: IncidentPlanePWave,
         num_farfield_terms: int,
-        num_angular_gridpoints: int,
         obstacle_config_file: str
     ):
         """Initialize a multiple-scattering problem.
@@ -63,10 +58,6 @@ class MKFE_FD_ScatteringProblem:
                 wave for this scattering problem 
             num_farfield_terms (int): The number of terms in the
                 farfield expansion to use at each obstacle
-            num_angular_gridpoints (int): The number of "angular"
-                gridpoints to use in each obstacle's grid (that is,
-                the number of gridpoints along the axis that will
-                not be affected by changes in PPW)
             obstacle_config_file (str): A path to the obstacle
                 configuration JSON file that contains information
                 about obstacle geometries and boundary conditions.
@@ -81,7 +72,6 @@ class MKFE_FD_ScatteringProblem:
 
         # Store other relevant information for MKFE FD algorithm
         self.num_farfield_terms = num_farfield_terms
-        self.num_angular_gridpoints = num_angular_gridpoints
 
         # Create a place to store fully-fleshed-out
         # obstacles of interest that can be used 
@@ -140,8 +130,7 @@ class MKFE_FD_ScatteringProblem:
                 boundary_condition=obstacle_geom.bc,
                 num_farfield_terms=self.num_farfield_terms,
                 parent_medium=self.medium,
-                PPW=PPW,
-                num_angular_gridpoints=self.num_angular_gridpoints
+                PPW=PPW
             )
             self.obstacles.append(new_obs)
             

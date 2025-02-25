@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Any
+from itertools import count
 
 from .consts import Grid
 from .grids import BaseGrid
@@ -13,8 +14,10 @@ class IncidentPlanePWave:
         phi (float): The global angle at which the incident wave 
             is propagating
         k (float): The wavenumber of the incident wave
+        id (int): The id of the wave (for caching purposes)
     """
-
+    id_iter = count()
+    
     def __init__(
         self,
         angle_of_incidence: float,
@@ -29,6 +32,7 @@ class IncidentPlanePWave:
             wavenumber (float): The wavenumber (k) of the incident
                 wave
         """
+        self.id = next(self.id_iter)
         self.phi = angle_of_incidence
         self.k = wavenumber
     

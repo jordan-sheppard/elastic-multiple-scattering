@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Self
 from abc import abstractmethod
 import numpy as np
 
@@ -6,9 +6,8 @@ from ..base.consts import Coordinates, Grid
 from ..base.grids import BaseGrid
 
 
-
-class FDGrid_Polar_Art_Bndry(BaseGrid):
-    """An base class for a grid with a circular artificial boundary
+class FDPolarGrid_ArtBndry(BaseGrid):
+    """A base class for a grid with a circular artificial boundary
     with imposed evenly-spaced (local) polar coordinates at that
     boundary.
     """
@@ -48,7 +47,7 @@ class FDGrid_Polar_Art_Bndry(BaseGrid):
         pass
     
 
-class FDLocalPolarGrid(FDGrid_Polar_Art_Bndry):
+class FDLocalPolarGrid(FDPolarGrid_ArtBndry):
     """An implementation of a Polar Grid for finite differences.
     
     Attributes:

@@ -33,3 +33,9 @@ class Algorithm(Enum):
     """
     GAUSS_SEIDEL = 1
 
+class QOI(Enum):
+    """Quantitis of interest for output"""
+    DISPLACEMENT = 1 
+    STRESS = 2
+    POTENTIALS = 3
+
