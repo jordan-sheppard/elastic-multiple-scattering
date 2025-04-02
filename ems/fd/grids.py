@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Self
 from abc import abstractmethod
 import numpy as np
 
@@ -6,9 +6,8 @@ from ..base.consts import Coordinates, Grid
 from ..base.grids import BaseGrid
 
 
-
-class FDGrid_Polar_Art_Bndry(BaseGrid):
-    """An base class for a grid with a circular artificial boundary
+class FDPolarGrid_ArtBndry(BaseGrid):
+    """A base class for a grid with a circular artificial boundary
     with imposed evenly-spaced (local) polar coordinates at that
     boundary.
     """
@@ -48,7 +47,7 @@ class FDGrid_Polar_Art_Bndry(BaseGrid):
         pass
     
 
-class FDLocalPolarGrid(FDGrid_Polar_Art_Bndry):
+class FDLocalPolarGrid(FDPolarGrid_ArtBndry):
     """An implementation of a Polar Grid for finite differences.
     
     Attributes:
@@ -87,6 +86,10 @@ class FDLocalPolarGrid(FDGrid_Polar_Art_Bndry):
         self.r_vals = np.linspace(r_min, r_max, num_r_pts)
         self.theta_vals = np.linspace(0, 2*np.pi, num_theta_pts, endpoint=False)
         self.r_local, self.theta_local = np.meshgrid(self.r_vals, self.theta_vals)
+        
+        # Store constants used for coordinate conversions
+        self.sin_theta_local = np.sin(self.theta_local)
+        self.cos_theta_local = np.cos(self.theta_local)
         
         # Store other needed finite difference items 
         self.dr = self.r_vals[1] - self.r_vals[0]

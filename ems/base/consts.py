@@ -33,3 +33,21 @@ class Algorithm(Enum):
     """
     GAUSS_SEIDEL = 1
 
+class QOI(Enum):
+    """Quantities of interest"""
+    DISPLACEMENT = 1 
+    STRESS = 2
+    POTENTIALS = 3
+
+class CoordinateSystem(Enum):
+    """Coordinate systems used for finding vector/tensor quantities."""
+    LOCAL_POLAR = 1 
+    LOCAL_CARTESIAN = 2
+    GLOBAL_POLAR = 3
+    GLOBAL_CARTESIAN = 4
+
+class ErrorType(Enum):
+    L2 = 1
+    L2_RELATIVE = 2 
+    LINFTY = 3
+

@@ -24,5 +24,9 @@ class BaseObstacle(ABC):
             raise NotImplementedError(
                 "Error: Soft BC not implemented yet."
             )
+    
+    @classmethod 
+    def reset_id_counter(cls):
+        cls.id_iter = count()
         
 

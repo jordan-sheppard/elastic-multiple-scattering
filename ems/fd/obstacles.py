@@ -13,13 +13,16 @@ import logging
 from .utils import sparse_periodic_tridiag, sparse_block_row, sparse_block_antidiag
 from ..base.consts import (
     Coordinates, BoundaryCondition, SparseMatrix,
-    Vector, Grid
+    Vector, Grid, QOI, CoordinateSystem
 )
 from ..base.obstacles import BaseObstacle
 from ..base.waves import IncidentPlanePWave
 from ..base.medium import LinearElasticMedium
-from .grids import FDLocalPolarGrid, FDGrid_Polar_Art_Bndry
-from ..base.interpolation import PeriodicInterpolator1D
+from .grids import FDLocalPolarGrid, FDPolarGrid_ArtBndry
+from .coefficients import (
+    ElasticPolarFarfieldEvaluator, FarfieldAngularCoefficients
+)
+from .waves import IncidentPlanePWaveEvaluator
 
 
 class FDObstacle(BaseObstacle):
@@ -123,7 +126,6 @@ class FDObstacle(BaseObstacle):
         self.psi_vals = np.zeros(self.grid.shape, dtype='complex128')
         
     
-
     def plot_grid(self, **kwargs):
         """Plot this obstacle's grid.
         
@@ -188,16 +190,20 @@ class FDObstacle(BaseObstacle):
         of parse_FD_raw_result()):
         
         * phi_vals (Grid): The value of the compressional potential phi 
-            at all gridpoints 
+            at all physical gridpoints 
+        * phi_vals_padded (Grid): The value of the compressional potential phi 
+            at all physical AND ghost gridpoints 
         * psi_vals (Grid): The value of the shear potential psi
             at all gridpoints
+        * psi_vals_padded (Grid): The value of the shear potential psi 
+            at all physical AND ghost gridpoints 
 
         Args:
             result (Vector): The raw output/solution vector of the FD
                 matrix/vector system
         """
-        self.phi_vals = self.parse_phi_from_FD_result(result)
-        self.psi_vals = self.parse_psi_from_FD_result(result)
+        self.phi_vals, self.phi_vals_padded = self.parse_phi_from_FD_result(result)
+        self.psi_vals, self.psi_vals_padded = self.parse_psi_from_FD_result(result)
 
 
     @property
@@ -225,7 +231,7 @@ class FDObstacle(BaseObstacle):
     @abstractmethod
     def generate_grid(
         self
-    ) -> FDGrid_Polar_Art_Bndry:
+    ) -> FDPolarGrid_ArtBndry:
         """Generate the grid given a specified wavelength in 
         self.wavelength, and a number of points per wavelength
         given by self.points_per_wavelength.
@@ -310,48 +316,87 @@ class FDObstacle(BaseObstacle):
         pass 
 
 
-    @abstractmethod
-    def get_scattered_wave(
-        self,
-        X: Optional[Grid]=None,
-        Y: Optional[Grid]=None
-    ) -> tuple[Grid, Grid]:
-        """Retrive the value of the outgoing scattered wave from
-        this obstacle at the given global gridpoints.
+    # @abstractmethod
+    # def get_scattered_wave(
+    #     self,
+    #     X: Optional[Grid]=None,
+    #     Y: Optional[Grid]=None,
+    #     qoi: QOI=QOI.POTENTIALS
+    # ) -> np.ndarray:
+    #     """Retrive the value of the outgoing scattered potentials from
+    #     this obstacle at the given global gridpoints.
 
-        If either X or Y is None, then these inputs are ignored,
-        and the value of the outgoing scattered wave is returned
-        at the local gridpoints.
+    #     If either X or Y is None, then these inputs are ignored,
+    #     and the value of the outgoing scattered wave is returned
+    #     at the local gridpoints.
 
-        Otherwise, all points (X,Y) should be lying outside of the
-        computational domain of this obstacle.
+    #     Otherwise, all points (X,Y) should be lying outside of the
+    #     computational domain of this obstacle.
         
-        Args:
-            X (Grid): The global X-coordinates (if None, retrieve
-                scattered wave values at each local gridpoint)
-            Y (Grid): The global Y-coordinates (if None, retrieve
-                scattered wave values at each local gridpoint)
+    #     Args:
+    #         X (Grid): The global X-coordinates (if None, retrieve
+    #             scattered wave values at each local gridpoint)
+    #         Y (Grid): The global Y-coordinates (if None, retrieve
+    #             scattered wave values at each local gridpoint)
+    #         qoi (QOI): The quantity of interest (either potentials,
+    #             displacements, or stresses) to return. Defaults 
+    #             to potentials
         
-        Returns:
-            Grid: The value of the outgoing scattered phi-wave (the
-                compressional potentional) at each gridpoint
-            Grid: The value of the outgoing scattered psi-wave (the
-                shear potential) at each gridpoint
+    #     Returns:
+    #         np.ndarray: The values of the quantity of interest 
+    #             (the -1 axis will be what differentiates the 
+    #             different quantities of interest. For potentials,
+    #             index 0 is phi and index 1 is psi. For displacements,
+    #             index 0 is u_{r} and index 1 is u_{theta} (global 
+    #             polar coordinates). For stresses, index 0 is 
+    #             sigma_{rr} and index 1 is sigma_{r theta} (global
+    #             polar coordinates).
 
-        Raises:
-            ValueError: If (X,Y) is within the computational 
-                domain of this obstacle
-        """
-        pass
+    #     Raises:
+    #         ValueError: If (X,Y) is within the computational 
+    #             domain of this obstacle
+    #     """
+    #     pass
 
 
     @abstractmethod
     def get_scattered_wave_at_obstacle(
         self, 
         obstacle: Self,
+        desired_quantity: QOI,
+        boundary_only: bool = True
     ) -> tuple[Grid, Grid]:
-        """Gets the scattered wave at and around another obstacle's
-        physical boundary."""
+        """Gets this obstacle's scattered wave displacement/stress
+        at the provided obstacle's gridpoints.
+
+        If desired, only gets scatterd wave values at 
+        1 "radial" (axis=1) row of gridpoints of the given
+        obstacle's grid corresponding to the gridpoints closest
+        to the physical boundary of this given obstacle.
+
+        Args:
+            obstacle (MKFE_FDObstacle): The obstacle we'd like to
+                evaluate this obstacle's scattered displacement
+                or stress at
+            desired_quantity (QOI): The desired quantity of interest
+                (either stress, displacement, or potentials)
+            boundary_only (bool): If true, only gets potentials at 
+                the innermost "radial" (axis=1) ring of gridpoints
+                around the obstacle's physical boundary. If False, gets 
+                values at every gridpoint in the provided obstacle's
+                grid. Defaults to True.
+        
+        Returns:
+            np.ndarray: The quantity of interest evaluated at each of
+                the gridpoints. (The -1 axis will be what differentiates the 
+                different quantities of interest. For potentials,
+                index 0 is phi and index 1 is psi. For displacements,
+                index 0 is u_{r_mbar} and index 1 is u_{theta_mbar} 
+                (the other obstacle's local polar coordinates).
+                For stresses, index 0 is sigma_{r_mbar r_mbar}
+                and index 1 is sigma_{r_mbar theta_mbar}
+                (the other obstacle's local polar coordinates).
+        """
         pass
 
 
@@ -437,8 +482,9 @@ class MKFE_FDObstacle(FDObstacle):
         # Initialize MKFE attributes 
         self.num_farfield_terms = num_farfield_terms
 
-        # Initialize lookup for other obstacle interactions 
-        self.obstacle_boundary_info = dict()
+        # Initialize lookup for other obstacle/incident wave interactions
+        self.obstacle_farfield_evaluators: dict[int, ElasticPolarFarfieldEvaluator] = dict()
+        self.incident_evaluators: dict[int, IncidentPlanePWaveEvaluator] = dict()
 
         super().__init__(
             center,
@@ -455,6 +501,10 @@ class MKFE_FDObstacle(FDObstacle):
         super().setup()
 
         # Initialize farfield coefficients
+        self.farfield_coeffs = FarfieldAngularCoefficients(
+            num_farfield_terms=self.num_farfield_terms,
+            num_angular_gridpoints=self.grid.num_angular_gridpoints
+        )
         self.farfield_fp_coeffs = np.zeros((self.num_farfield_terms, self.grid.num_angular_gridpoints), dtype='complex128')
         self.farfield_fs_coeffs = np.zeros((self.num_farfield_terms, self.grid.num_angular_gridpoints), dtype='complex128')
         self.farfield_gp_coeffs = np.zeros((self.num_farfield_terms, self.grid.num_angular_gridpoints), dtype='complex128')
@@ -519,59 +569,106 @@ class MKFE_FDObstacle(FDObstacle):
         # and self.psi_vals
         super().parse_raw_FD_result(result)
 
-        # Parse farfield coefficients into self.farfield_fp_coeffs,
-        # self.farfield_gp_coeffs, self.farfield_fs_coeffs, and 
-        # self.farfield_gs_coeffs
-        self.farfield_fp_coeffs = self.parse_farfield_fp_coeffs_from_FD_result(result)
-        self.farfield_gp_coeffs = self.parse_farfield_gp_coeffs_from_FD_result(result)
-        self.farfield_fs_coeffs = self.parse_farfield_fs_coeffs_from_FD_result(result)
-        self.farfield_gs_coeffs = self.parse_farfield_gs_coeffs_from_FD_result(result)
+        # Parse and update farfield coefficients
+        self.farfield_coeffs.update_fp_coeffs(
+            self.parse_farfield_fp_coeffs_from_FD_result(result)
+        )
+        self.farfield_coeffs.update_gp_coeffs(
+            self.parse_farfield_gp_coeffs_from_FD_result(result)
+        )
+        self.farfield_coeffs.update_fs_coeffs(
+            self.parse_farfield_fs_coeffs_from_FD_result(result)
+        )
+        self.farfield_coeffs.update_gs_coeffs(
+            self.parse_farfield_gs_coeffs_from_FD_result(result)
+        )
 
 
     def parse_phi_from_FD_result(self, result) -> Grid:
-        # Get vector phi values at gridpoints from results vector
-        begin_idx = (
-            2 * self.num_ghost_points_physical_boundary
-            * self.grid.num_angular_gridpoints
-        )       # Skips angular gridpoints for both phi and psi for any ghost points
+        # Initialize empty grids to store phi values in
+        num_ghost_points = self.num_ghost_points_artificial_boundary + self.num_ghost_points_physical_boundary
+        grid_shape_with_ghost_points = (self.grid.num_angular_gridpoints, self.grid.num_radial_gridpoints + num_ghost_points)
+        phi_full_grid = np.zeros(grid_shape_with_ghost_points, dtype='complex128')  # Includes ghost points
+        phi_grid = np.zeros(self.grid.shape, dtype='complex128')                    # Does not include ghost points
+        
+        # Get ghost points at physical boundary 
+        begin_idx = 0
         step = self.grid.num_angular_gridpoints
-        phi_grid = np.zeros(self.grid.shape, dtype='complex128')
-        for r in range(self.grid.num_radial_gridpoints):
+        for r in range(self.num_ghost_points_physical_boundary):
             # Parse current radial layer of phi gridpoints
             end_idx = begin_idx + step
-            # logging.debug(f"Phi value indexes for radial ring {r}: [{begin_idx}, {end_idx}]")
-            phi_grid[:,r] = result[begin_idx:end_idx]
+            phi_full_grid[:,r] = result[begin_idx:end_idx]
 
             # Increment to next radial layer (skipping the psi gridpoints on the current layer)
             begin_idx = end_idx + step
-        return phi_grid
-
-
-    def parse_psi_from_FD_result(self, result) -> Grid:        
-        psi_grid = np.zeros(self.grid.shape, dtype='complex128')
-
-        step = self.grid.num_angular_gridpoints
-        begin_idx = (
-            2 * self.num_ghost_points_physical_boundary
-            * self.grid.num_angular_gridpoints
-        ) + step        # Skips angular gridpoints for both phi and psi for any ghost points, along with layer of phi gridpoints at physical boundary
+        
+        # Get physical gridpoints
         for r in range(self.grid.num_radial_gridpoints):
             # Parse current radial layer of phi gridpoints
             end_idx = begin_idx + step
-            logging.debug(f"Psi value indexes for radial ring {r}: [{begin_idx}, {end_idx}]")
-            psi_grid[:,r] = result[begin_idx:end_idx]
+            phi_grid[:,r] = result[begin_idx:end_idx]
+            phi_full_grid[:,r + self.num_ghost_points_physical_boundary] = result[begin_idx:end_idx]
 
-            # Increment to next radial layer (skipping the phi gridpoints on the next layer)
+            # Increment to next radial layer (skipping the psi gridpoints on the current layer)
             begin_idx = end_idx + step
 
-        return psi_grid
+        # Get ghost points at artificial boundary 
+        for r in range(self.num_ghost_points_artificial_boundary):
+            # Parse current radial layer of phi gridpoints
+            end_idx = begin_idx + step
+            phi_full_grid[:,r + self.grid.num_radial_gridpoints + self.num_ghost_points_physical_boundary] = result[begin_idx:end_idx]
+
+            # Increment to next radial layer (skipping the psi gridpoints on the current layer)
+            begin_idx = end_idx + step
+        
+        return phi_grid, phi_full_grid
+
+
+    def parse_psi_from_FD_result(self, result) -> Grid:        
+        # Initialize empty grids to store psi values in
+        num_ghost_points = self.num_ghost_points_artificial_boundary + self.num_ghost_points_physical_boundary
+        grid_shape_with_ghost_points = (self.grid.num_angular_gridpoints, self.grid.num_radial_gridpoints + num_ghost_points)
+        psi_full_grid = np.zeros(grid_shape_with_ghost_points, dtype='complex128')  # Includes ghost points
+        psi_grid = np.zeros(self.grid.shape, dtype='complex128')                    # Does not include ghost points
+
+        # Get ghost points at physical boundary 
+        step = self.grid.num_angular_gridpoints
+        begin_idx = 0 + step
+        for r in range(self.num_ghost_points_physical_boundary):
+            # Parse current radial layer of psi gridpoints
+            end_idx = begin_idx + step
+            psi_full_grid[:,r] = result[begin_idx:end_idx]
+
+            # Increment to next radial layer (skipping the psi gridpoints on the current layer)
+            begin_idx = end_idx + step
+
+        # Get physical gridpoints
+        for r in range(self.grid.num_radial_gridpoints):
+            # Parse current radial layer of phi gridpoints
+            end_idx = begin_idx + step
+            psi_grid[:,r] = result[begin_idx:end_idx]
+            psi_full_grid[:,r + self.num_ghost_points_physical_boundary] = result[begin_idx:end_idx]
+
+            # Increment to next radial layer (skipping the psi gridpoints on the current layer)
+            begin_idx = end_idx + step
+
+        # Get ghost points at artificial boundary 
+        for r in range(self.num_ghost_points_artificial_boundary):
+            # Parse current radial layer of phi gridpoints
+            end_idx = begin_idx + step
+            psi_full_grid[:,r + self.grid.num_radial_gridpoints + self.num_ghost_points_physical_boundary] = result[begin_idx:end_idx]
+
+            # Increment to next radial layer (skipping the psi gridpoints on the current layer)
+            begin_idx = end_idx + step
+
+        return psi_grid, psi_full_grid
 
 
     def parse_farfield_fp_coeffs_from_FD_result(
         self, 
         result:Vector
     ) -> np.ndarray:
-        """Parse the farfield F_l^p (compressional F) coefficient
+        """Parse the scaled farfield F_l^p (compressional F) coefficient
         values at each "angular" gridpoint at the artificial
         boundary, for each term l=0, ..., self.num_farfield_terms,
         all from a given raw finite-difference result vector.
@@ -584,7 +681,7 @@ class MKFE_FDObstacle(FDObstacle):
                 matrix/vector system
         
         Returns:
-            np.ndarray: A (L, self.grid.shape[0]) array of 
+            np.ndarray: A (self.grid.shape[0], L) array of 
                 compressional F_l^p coefficient values at each
                 angular gridpoint on the artificial boundary.
         """
@@ -596,18 +693,16 @@ class MKFE_FDObstacle(FDObstacle):
             ) 
         )
         
-        fp_coeffs = np.zeros(
-            (self.num_farfield_terms, self.grid.num_angular_gridpoints),
-            dtype='complex128'
-        )
+        # Get the Fp coefficient chunk of the unknown vector, and reshape
+        # it to be of shape (N_{theta}^{m}, L) 
         start = num_unknown_grid_vals
-        step = self.grid.num_angular_gridpoints
-        logging.debug(f"Farfield F_p coeffs start index: {start}")
-        for l in range(self.num_farfield_terms):
-            end = start + step
-            fp_coeffs[l] = result[start:end]
-            start = end
-        logging.debug(f"Farfield F_p coeffs end index: {start}")
+        end = start + (self.num_farfield_terms * self.grid.num_angular_gridpoints) 
+        fp_coeffs = np.reshape(
+            result[start:end],
+            shape=(self.grid.num_angular_gridpoints, self.num_farfield_terms),
+            order='F'
+        )   # This command makes it so fp_coeffs[:,l] gives [F_{m,l}^p(theta_1), ..., F_{m,l}^p(theta_{N})]
+        
         return fp_coeffs
     
 
@@ -615,7 +710,7 @@ class MKFE_FDObstacle(FDObstacle):
         self, 
         result:Vector
     ) -> np.ndarray:
-        """Parse the farfield G_l^p (compressional G) coefficient
+        """Parse the scaled farfield G_l^p (compressional G) coefficient
         values at each "angular" gridpoint at the artificial
         boundary, for each term l=0, ..., self.num_farfield_terms,
         all from a given raw finite-difference result vector.
@@ -628,7 +723,7 @@ class MKFE_FDObstacle(FDObstacle):
                 matrix/vector system
         
         Returns:
-            np.ndarray: A (L, self.grid.shape[0]) array of 
+            np.ndarray: A (self.grid.shape[0], L) array of 
                 compressional G_l^p coefficient values at each
                 angular gridpoint on the artificial boundary.
         """
@@ -644,18 +739,16 @@ class MKFE_FDObstacle(FDObstacle):
             * self.grid.num_angular_gridpoints
         )
         
-        gp_coeffs = np.zeros(
-            (self.num_farfield_terms, self.grid.num_angular_gridpoints),
-            dtype='complex128'
-        )
+        # Get the Gp coefficient chunk of the unknown vector, and reshape
+        # it to be of shape (N_{theta}^{m}, L) 
         start = num_unknown_grid_vals + num_fp_coeffs
-        step = self.grid.num_angular_gridpoints
-        logging.debug(f"Farfield G_p coeffs start index: {start}")
-        for l in range(self.num_farfield_terms):
-            end = start + step
-            gp_coeffs[l] = result[start:end]
-            start = end
-        logging.debug(f"Farfield G_p coeffs end index: {start}")
+        end = start + (self.num_farfield_terms * self.grid.num_angular_gridpoints)
+        gp_coeffs = np.reshape(
+            result[start:end],
+            shape=(self.grid.num_angular_gridpoints, self.num_farfield_terms),
+            order='F'
+        )   # This command makes it so gp_coeffs[:,l] gives [G_{m,l}^p(theta_1), ..., G_{m,l}^p(theta_{N})]
+        
         return gp_coeffs
     
 
@@ -663,7 +756,7 @@ class MKFE_FDObstacle(FDObstacle):
         self, 
         result:Vector
     ) -> np.ndarray:
-        """Parse the farfield F_l^s (shear F) coefficient
+        """Parse the scaled farfield F_l^s (shear F) coefficient
         values at each "angular" gridpoint at the artificial
         boundary, for each term l=0, ..., self.num_farfield_terms,
         all from a given raw finite-difference result vector.
@@ -676,7 +769,7 @@ class MKFE_FDObstacle(FDObstacle):
                 matrix/vector system
         
         Returns:
-            np.ndarray: A (L, self.grid.shape[0]) array of 
+            np.ndarray: A (self.grid.shape[0], L) array of 
                 compressional F_l^s coefficient values at each
                 angular gridpoint on the artificial boundary.
         """
@@ -692,18 +785,16 @@ class MKFE_FDObstacle(FDObstacle):
             * self.grid.num_angular_gridpoints
         )
         
-        fs_coeffs = np.zeros(
-            (self.num_farfield_terms, self.grid.num_angular_gridpoints),
-            dtype='complex128'
-        )
+        # Get the Fs coefficient chunk of the unknown vector, and reshape
+        # it to be of shape (N_{theta}^{m}, L) 
         start = num_unknown_grid_vals + num_compressional_coeffs
-        step = self.grid.num_angular_gridpoints
-        logging.debug(f"Farfield F_s coeffs start index: {start}")
-        for l in range(self.num_farfield_terms):
-            end = start + step
-            fs_coeffs[l] = result[start:end]
-            start = end 
-        logging.debug(f"Farfield F_s coeffs end index: {start}")
+        end = start + (self.num_farfield_terms * self.grid.num_angular_gridpoints)
+        fs_coeffs = np.reshape(
+            result[start:end],
+            shape=(self.grid.num_angular_gridpoints, self.num_farfield_terms),
+            order='F'
+        )   # This command makes it so fs_coeffs[:,l] gives [F_{m,l}^s(theta_1), ..., F_{m,l}^s(theta_{N})]
+        
         return fs_coeffs
     
 
@@ -711,7 +802,7 @@ class MKFE_FDObstacle(FDObstacle):
         self, 
         result:Vector
     ) -> np.ndarray:
-        """Parse the farfield G_l^s (shear G) coefficient
+        """Parse the scaled farfield G_l^s (shear G) coefficient
         values at each "angular" gridpoint at the artificial
         boundary, for each term l=0, ..., self.num_farfield_terms,
         all from a given raw finite-difference result vector.
@@ -724,7 +815,7 @@ class MKFE_FDObstacle(FDObstacle):
                 matrix/vector system
         
         Returns:
-            np.ndarray: A (L, self.grid.shape[0]) array of 
+            np.ndarray: A (self.grid.shape[0], L) array of 
                 compressional G_l^s coefficient values at each
                 angular gridpoint on the artificial boundary.
         """
@@ -743,85 +834,78 @@ class MKFE_FDObstacle(FDObstacle):
             self.num_farfield_terms 
             * self.grid.num_angular_gridpoints
         )
-        
-        gs_coeffs = np.zeros(
-            (self.num_farfield_terms, self.grid.num_angular_gridpoints),
-            dtype='complex128'
-        )
+
+        # Get the Gs coefficient chunk of the unknown vector, and reshape
+        # it to be of shape (N_{theta}^{m}, L) 
         start = (
             num_unknown_grid_vals + num_compressional_coeffs
             + num_gs_coeffs
         )
-        step = self.grid.num_angular_gridpoints
-        logging.debug(f"Farfield G_s coeffs start index: {start}")
-        for l in range(self.num_farfield_terms):
-            end = start + step
-            gs_coeffs[l] = result[start:end]
-            start = end 
-        logging.debug(f"Farfield G_s coeffs end index: {start}")
+        end = start + (self.num_farfield_terms * self.grid.num_angular_gridpoints)
+        gs_coeffs = np.reshape(
+            result[start:end],
+            shape=(self.grid.num_angular_gridpoints, self.num_farfield_terms),
+            order='F'
+        )   # This command makes it so gs_coeffs[:,l] gives [G_{m,l}^s(theta_1), ..., G_{m,l}^s(theta_{N})]
+
         return gs_coeffs
 
 
-    def _cache_obstacle_boundary_data(self, obstacle: Self) -> None:
-        """If an obstacle's boundary info is not in self.obstacle_boundary_info,
-        caches the desired information about the obstacle boundary there.
+    def get_total_phi(
+        self,
+        u_inc: Optional[IncidentPlanePWave] = None,
+        other_obstacles: Optional[list[Self]] = None
+    ) -> np.ndarray:
+        """Gets the total phi at each gridpoint at this obstacle."""
+        # Get current obstacle scattered phi
+        phi_tot = self.phi_vals.copy()
         
-        Args:
-            obstacle (MKFE_FDObstacle): An obstacle we'd like to store
-                boundary information about.
-        """
-        if obstacle.id not in self.obstacle_boundary_info:
-            interpolator = PeriodicInterpolator1D((0, 2*np.pi), self.grid.angular_gridpts_artificial_boundary)
-
-            # Get global gridpoints around given obstacle
-            obstacle_boundary_global_coords = obstacle.grid.local_coords_to_global_XY()
-            X, Y = obstacle_boundary_global_coords
-            
-            # Validate computational domains don't overlap
-            if np.any(
-                np.sqrt(
-                    (X-self.center_global[0])**2 + (Y-self.center_global[1])**2
-                ) < self.r_artificial_boundary
-            ):
-                raise ValueError("All points must be outside computatational domain of this obstacle")
-
-            # Convert the global coordinates to this obstacle's local coordinate system
-            obstacle_boundary_cur_local_coords = self.grid.global_XY_to_local_coords(X, Y)
-            obstacle_boundary_R, obstacle_boundary_Theta = obstacle_boundary_cur_local_coords
-            obstacle_boundary_R = obstacle_boundary_R.T             # Now, radius is first axis, angle is second
-            obstacle_boundary_Theta = obstacle_boundary_Theta.T     # Same here
-
-            # Evaluate all sorts of Hankel functions beforehand, since these are expensive
-            obstacle_boundary_kp_hankel0 = hankel1(0, self.parent_medium.kp * obstacle_boundary_R)
-            obstacle_boundary_kp_hankel1 = hankel1(1, self.parent_medium.kp * obstacle_boundary_R)
-            obstacle_boundary_ks_hankel0 = hankel1(0, self.parent_medium.ks * obstacle_boundary_R) 
-            obstacle_boundary_ks_hankel1 = hankel1(1, self.parent_medium.ks * obstacle_boundary_R)
-
-            # Evaluate radii to all the powers needed with kp/ks multiplied 
-            # The shapes of these arrays will be (num_farfield_terms, (obstacle_boundary_R shape))
-            powers = np.arange(self.num_farfield_terms)
-            r_powers_kp = (self.parent_medium.kp * np.expand_dims(obstacle_boundary_R, axis=-1)) ** powers
-            r_powers_ks = (self.parent_medium.ks * np.expand_dims(obstacle_boundary_R, axis=-1)) ** powers
-
-            # Store all above information in a lookup dictionary and add to 
-            # the obstacle_boundary_info data structure for future use
-            obstacle_info = {
-                'interpolator': interpolator, 
-                'R_local': obstacle_boundary_R,
-                'Theta_local': obstacle_boundary_Theta,
-                'Hankels': {
-                    'kp_ord_0': obstacle_boundary_kp_hankel0,
-                    'kp_ord_1': obstacle_boundary_kp_hankel1,
-                    'ks_ord_0': obstacle_boundary_ks_hankel0,
-                    'ks_ord_1': obstacle_boundary_ks_hankel1
-                },
-                'Radius_powers': {
-                    'kp': r_powers_kp,
-                    'ks': r_powers_ks
-                }
-            }
-            self.obstacle_boundary_info[obstacle.id] = obstacle_info
+        # Get incident wave phi
+        if u_inc is not None:
+            if u_inc.id not in self.incident_evaluators:
+                raise ValueError(f"ERROR: Cannot get phi from incident wave with id {u_inc.id}. Was not used to solve this obstacle")
+            phi_tot += self.incident_evaluators[u_inc.id].potentials(boundary_only=False)[:,:,0]
+        
+        # Get other obstacle scattered phi
+        if other_obstacles is not None:
+            for obstacle in other_obstacles:
+                phi_tot += obstacle.get_scattered_wave_at_obstacle(
+                    obstacle=self,
+                    boundary_only=False,
+                    desired_quantity=QOI.POTENTIALS,
+                    update=False
+                )[:,:,0]
+        
+        return phi_tot
     
+    def get_total_psi(
+        self,
+        u_inc: Optional[IncidentPlanePWave] = None,
+        other_obstacles: Optional[list[Self]] = None
+    ) -> np.ndarray:
+        """Gets the total psi at each gridpoint at this obstacle."""
+        # Get current obstacle scattered psi
+        psi_tot = self.psi_vals.copy()
+
+        # Get incident wave psi
+        if u_inc is not None:
+            if u_inc.id not in self.incident_evaluators:
+                raise ValueError(f"ERROR: Cannot plot incident wave with id {u_inc.id}. Was not used to solve this obstacle")
+            psi_tot += self.incident_evaluators[u_inc.id].potentials(boundary_only=False)[:,:,1]
+
+        # Get other obstacle scattered psi
+        if other_obstacles is not None:
+            for obstacle in other_obstacles:
+                psi_tot += obstacle.get_scattered_wave_at_obstacle(
+                    obstacle=self,
+                    boundary_only=False,
+                    desired_quantity=QOI.POTENTIALS,
+                    update=False
+                )[:,:,1]
+
+        return psi_tot
+
+
     def _plot_periodic_contourf(
         self,
         X: np.ndarray,
@@ -858,7 +942,7 @@ class MKFE_FDObstacle(FDObstacle):
         else:
             cmap = cm.coolwarm
         plt.contourf(X, Y, Z, color_grid_vals, cmap=cmap)
-        plt.colorbar()
+        # plt.colorbar()
 
 
     def plot_phi_contourf(
@@ -892,21 +976,16 @@ class MKFE_FDObstacle(FDObstacle):
                 to use for plotting (cm.coolwarm is used if none
                 is provided)
         """
-        # Clean method 
-        method = method.strip().lower() 
-
-        # Get values to plot
-        phi_tot = self.phi_vals
-        if u_inc is not None:
-            phi_tot += u_inc(self.grid)
-        
-        if other_obstacles is not None:
-            for obstacle in other_obstacles:
-                phi_tot += obstacle.get_scattered_wave_at_obstacle(self, boundary_only=False)[0]
+        # Get total phi 
+        phi_tot = self.get_total_phi(u_inc, other_obstacles)
 
         # Plot contour with given color/colormap args
         X_global, Y_global = self.grid.local_coords_to_global_XY()
 
+        # Clean method string
+        method = method.strip().lower() 
+
+        # Get correct quantity to plot
         if method == 'abs':
             z_vals = np.abs(phi_tot)
         elif method == 'real':
@@ -922,6 +1001,7 @@ class MKFE_FDObstacle(FDObstacle):
     def plot_psi_contourf(
         self,
         method:str = 'abs',
+        u_inc: Optional[IncidentPlanePWave] = None,
         other_obstacles: Optional[list[Self]] = None,
         **kwargs
     ) -> None:
@@ -940,6 +1020,8 @@ class MKFE_FDObstacle(FDObstacle):
                 the real part ('real'), or the imaginary part ('imag')
                 of the psi scattered potential.
                 Default is 'abs'.
+            u_inc (IncidentPlanePWave): If provided, the incident
+                plane p-wave on this obstacle.
             other_obstacles (list[Self]): If provided, a list
                 of other obstacles whose scattered potentials 
                 are incident upon this obstacle.
@@ -947,18 +1029,17 @@ class MKFE_FDObstacle(FDObstacle):
                 to use for plotting (cm.coolwarm is used if none
                 is provided)
         """
-        # Clean the method string 
-        method = method.strip().lower() 
-
-        psi_tot = self.psi_vals
-        if other_obstacles is not None:
-            for obstacle in other_obstacles:
-                psi_tot += obstacle.get_scattered_wave_at_obstacle(self, boundary_only=False)[1]
+        # Get total psi 
+        psi_tot = self.get_total_psi(u_inc, other_obstacles)
 
         # Plot contour with given color/colormap args
         X_global, Y_global = self.grid.local_coords_to_global_XY()
 
-        if method.lower() == 'abs':
+        # Clean the method string 
+        method = method.strip().lower() 
+
+        # Get correct quantity to plot
+        if method == 'abs':
             z_vals = np.abs(psi_tot)
         elif method == 'real':
             z_vals = np.real(psi_tot)
@@ -968,176 +1049,110 @@ class MKFE_FDObstacle(FDObstacle):
             raise ValueError(f"Plotting method {method} not recognized.")
 
         self._plot_periodic_contourf(X_global, Y_global, z_vals, **kwargs)
-        # psi_real = np.real(psi_tot)
-        # self._plot_periodic_contourf(X_global, Y_global, psi_real, **kwargs)
 
+
+    def _cache_farfield_evaluator(self, obstacle: Self) -> None:
+        """If an obstacle's boundary info is not in self.obstacle_boundary_info,
+        caches the desired information about the obstacle boundary there.
+        
+        Args:
+            obstacle (MKFE_FDObstacle): An obstacle we'd like to store
+                boundary information about.
+        """
+        # Skip any obstacles we've already cached
+        if obstacle.id in self.obstacle_farfield_evaluators:
+            return 
+        
+        # Check obstacle uses polar grid.
+        # If it doesn't, current implementation won't work.
+        if not isinstance(obstacle.grid, FDLocalPolarGrid):
+            raise ValueError("Error: For current implementation, obstacle grids must all be polar")
+
+        # Create a farfield evaluator object for evaluating this
+        # current obstacle's (self's) farfield expansion data
+        # at the other provided obstacle's gridpoints.
+        farfield_evaluator = ElasticPolarFarfieldEvaluator(
+            source_local_grid=self.grid,
+            dest_local_grid=obstacle.grid,
+            medium=obstacle.parent_medium,
+            num_farfield_terms=obstacle.num_farfield_terms
+        )
+        self.obstacle_farfield_evaluators[obstacle.id] = farfield_evaluator
+    
+
+    def phi(self) -> np.ndarray:
+        """Returns the phi_m potential at the m-local gridpoints"""
+        return self.phi_vals 
+    
+    def psi(self) -> np.ndarray:
+        """Returns the psi_m potential at the m-local gridpoints"""
+        return self.psi_vals
 
     def get_scattered_wave_at_obstacle(
         self, 
         obstacle: Self,
-        boundary_only: bool = True
-    ) -> tuple[Grid, Grid]:
-        """Gets this obstacle's scattered wave potential (phi/psi)
-        values at the gridpoints around another given obstacle.
+        desired_quantity: QOI,
+        boundary_only: bool = True,
+        update: bool = True, 
+        coordinate_system: CoordinateSystem = CoordinateSystem.LOCAL_POLAR
+    ) -> np.ndarray:
+        """Gets this obstacle's scattered wave displacement/stress
+        at the provided obstacle's gridpoints.
 
         If desired, only gets scatterd wave values at 
-        3 "radial" (axis=1) rows of gridpoints of the given
+        1 "radial" (axis=1) row of gridpoints of the given
         obstacle's grid corresponding to the gridpoints closest
         to the physical boundary of this given obstacle.
 
-        Uses Karp's Farfield expansion to approximate these values 
-        from the angular coefficients at this obstacle (assumes 
-        that all gridpoints are outside of the computational
-        domain of this obstacle)
-
         Args:
             obstacle (MKFE_FDObstacle): The obstacle we'd like to
-                get the scattered potentials at 
-            boundary_only (bool): If true, only gets potentials at 3
-                "radial" (axis=1) rings of gridpoints around the 
-                obstacle's physical boundary. If False, gets 
+                evaluate this obstacle's scattered displacement
+                or stress at
+            desired_quantity (QOI): The desired quantity of interest
+                (either stress, displacement, or potentials)
+            boundary_only (bool): If true, only gets potentials at 
+                the innermost "radial" (axis=1) ring of gridpoints
+                around the obstacle's physical boundary. If False, gets 
                 values at every gridpoint in the provided obstacle's
-                grid (defaults to True).
+                grid. Defaults to True.
+            update (bool): Whether to update to most current iteration
+                of farfield coefficients. Default is True, but should be
+                False for plotting.
+            coordinate_system (CoordinateSystem): Which coordinate system
+                to return quantity of interest in (only used for 
+                displacement or stress desired_quantity values).
+            
         
         Returns:
-            tuple[Grid, Grid]: The two scattered potentials at each 
-                of the desired gridpoints (in a shape matching the 
-                provided obstacle's grid). Returned in the order
-                (phi, psi).
+            np.ndarray: The quantity of interest evaluated at each of
+                the gridpoints. (The -1 axis will be what differentiates the 
+                different quantities of interest. For potentials,
+                index 0 is phi and index 1 is psi. For displacements,
+                index 0 is u_{r_mbar} and index 1 is u_{theta_mbar} 
+                (the other obstacle's local polar coordinates).
+                For stresses, index 0 is sigma_{r_mbar r_mbar}
+                and index 1 is sigma_{r_mbar theta_mbar}
+                (the other obstacle's local polar coordinates).
         """
-        # Store obstacle boundary info if not already stored
-        self._cache_obstacle_boundary_data(obstacle)
+        # Create farfield evaluator for given obstacle if not already done
+        self._cache_farfield_evaluator(obstacle)
 
-        ## Get the obstacle boundary info
-        interpolator: PeriodicInterpolator1D = self.obstacle_boundary_info[obstacle.id]['interpolator']
-        R_local: np.ndarray = self.obstacle_boundary_info[obstacle.id]['R_local']
-        Theta_local: np.ndarray = self.obstacle_boundary_info[obstacle.id]['Theta_local']
+        # Update the angular coefficients in that farfield evaluator
+        if update:
+            self.obstacle_farfield_evaluators[obstacle.id].update_angular_coeffs(self.farfield_coeffs)
 
-        # Filter out only boundary rows if desired
-        if boundary_only:
-            R_local = R_local[:3,:]
-            Theta_local = Theta_local[:3,:]
-        
-        ## Get farfield coefficients at each of the boundary gridpoints 
-        # F_l^p
-        interpolator.update_func_vals(self.farfield_fp_coeffs.T)  # Have to transpose so -1 axis becomes 0 axis
-        fp_vals = interpolator.interpolate(Theta_local)
-
-        # G_l^p
-        interpolator.update_func_vals(self.farfield_gp_coeffs.T)
-        gp_vals = interpolator.interpolate(Theta_local)
-
-        # F_l^s 
-        interpolator.update_func_vals(self.farfield_fs_coeffs.T)
-        fs_vals = interpolator.interpolate(Theta_local)
-
-        # G_l^s 
-        interpolator.update_func_vals(self.farfield_gs_coeffs.T)
-        gs_vals = interpolator.interpolate(Theta_local)
-
-        ## Reconstruct phi and psi values at each gridpoint
-        # Get Hankel function values
-        hankels = self.obstacle_boundary_info[obstacle.id]['Hankels']
-        phi_hankels_order_0 = hankels['kp_ord_0']
-        phi_hankels_order_1 = hankels['kp_ord_1']
-        psi_hankels_order_0 = hankels['ks_ord_0']
-        psi_hankels_order_1 = hankels['ks_ord_1']
-
-        # Filter out only boundary rows if desired
-        if boundary_only:
-            phi_hankels_order_0 = phi_hankels_order_0[:3,:]
-            phi_hankels_order_1 = phi_hankels_order_1[:3,:]
-            psi_hankels_order_0 = psi_hankels_order_0[:3,:]
-            psi_hankels_order_1 = psi_hankels_order_1[:3,:]
-
-        # Get (wavenumber * radius) powers
-        radius_powers = self.obstacle_boundary_info[obstacle.id]['Radius_powers']
-        phi_radius_powers = radius_powers['kp']
-        psi_radius_powers = radius_powers['ks']
-
-        # Filter out only boundary rows if desired
-        if boundary_only:
-            phi_radius_powers = phi_radius_powers[:3,:,:]
-            psi_radius_powers = psi_radius_powers[:3,:,:]
-
-        # Now, use Karp expansion to do what we want
-        fp_sum = phi_hankels_order_0 * np.sum(fp_vals / phi_radius_powers, axis=-1)
-        gp_sum = phi_hankels_order_1 * np.sum(gp_vals / phi_radius_powers, axis=-1)
-        phi_approx = fp_sum + gp_sum 
-
-        fs_sum = psi_hankels_order_0 * np.sum(fs_vals / psi_radius_powers, axis=-1)
-        gs_sum = psi_hankels_order_1 * np.sum(gs_vals / psi_radius_powers, axis=-1)
-        psi_approx = fs_sum + gs_sum
-        
-        # Return Karp expansion approximation for phi and psi 
-        # at this obstacle's boundary (transposed now again to match
-        # the original obstacle grid shape)
-        return phi_approx.T, psi_approx.T 
-
-
-    def get_scattered_wave(self, X = None, Y = None):
-        # If argument missing, give scattered wave at obstacle gridpoints
-        if X is None or Y is None:
-            return self.phi_vals, self.psi_vals
-        
-        if np.any(
-            np.sqrt(
-                (X-self.center_global[0])**2 + (Y-self.center_global[1])**2
-            ) < self.r_artificial_boundary
-        ):
-            raise ValueError("All points must be outside computatational domain of this obstacle")
-        
-        # Otherwise, get local-coordinate representation of X and Y
-        R_local, Theta_local = self.grid.global_XY_to_local_coords(X, Y)
-
-        # RECALL: With how polar grids are defined earlier,
-        # axis 0 = theta points, axis 1 = r points
-        R_local = R_local.T             # Now, radius is first axis, angle is second
-        Theta_local = Theta_local.T     # Same here
-
-        # Create way to interpolate farfield coefficients from this obstacle
-        interpolator = PeriodicInterpolator1D((0, 2*np.pi), self.grid.angular_gridpts_artificial_boundary)
-
-        # Evaluate all sorts of Hankel functions beforehand, since these are expensive
-        kp_hankel0 = hankel1(0, self.parent_medium.kp * R_local)
-        kp_hankel1 = hankel1(1, self.parent_medium.kp * R_local)
-        ks_hankel0 = hankel1(0, self.parent_medium.ks * R_local) 
-        ks_hankel1 = hankel1(1, self.parent_medium.ks * R_local)
-
-        # Evaluate radii to all the powers needed with kp/ks multiplied 
-        # The shapes of these arrays will be (num_farfield_terms, (obstacle_boundary_R shape))
-        powers = np.arange(self.num_farfield_terms).reshape((-1,1,1))
-        r_powers_kp = (self.parent_medium.kp * R_local) ** powers
-        r_powers_ks = (self.parent_medium.ks * R_local) ** powers
-
-        ## Get farfield coefficients at each of the boundary gridpoints 
-        # F_l^p
-        interpolator.update_func_vals(self.farfield_fp_coeffs.T)  # Have to transpose so -1 axis becomes 0 axis
-        fp_vals = interpolator.interpolate(Theta_local)
-
-        # G_l^p
-        interpolator.update_func_vals(self.farfield_gp_coeffs.T)
-        gp_vals = interpolator.interpolate(Theta_local)
-
-        # F_l^s 
-        interpolator.update_func_vals(self.farfield_fs_coeffs.T)
-        fs_vals = interpolator.interpolate(Theta_local)
-
-        # G_l^s 
-        interpolator.update_func_vals(self.farfield_gs_coeffs.T)
-        gs_vals = interpolator.interpolate(Theta_local)
-
-        ## Now, use Karp expansion to do what we want
-        fp_sum = kp_hankel0 * np.sum(fp_vals / r_powers_kp, axis=0)
-        gp_sum = kp_hankel1 * np.sum(gp_vals / r_powers_kp, axis=0)
-        phi_approx = fp_sum + gp_sum 
-
-        fs_sum = ks_hankel0 * np.sum(fs_vals / r_powers_ks, axis=0)
-        gs_sum = ks_hankel1 * np.sum(gs_vals / r_powers_ks, axis=0)
-        psi_approx = fs_sum + gs_sum
-
-        return phi_approx, psi_approx
+        # Check what sort of data is desired on the provided grid, and return it
+        farfield_evaluator = self.obstacle_farfield_evaluators[obstacle.id]
+        if desired_quantity is QOI.POTENTIALS:
+            return farfield_evaluator.potentials(boundary_only)
+        elif desired_quantity is QOI.DISPLACEMENT:
+            return farfield_evaluator.displacement(boundary_only, coordinate_system)
+        elif desired_quantity is QOI.STRESS:
+            raise NotImplementedError(f"Error: Stress QOI not yet implemented")
+        else:
+            raise ValueError("desired_quantity must be a QOI Enum value (POTENTIALS, DISPLACEMENT, or STRESS)")
     
+
 
 class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
     """A circular obstacle in an elastic multiple-scattering problem.
@@ -1219,9 +1234,6 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         ks = parent_medium.ks
         self.num_angular_gridpoints = floor(PPW*(2*np.pi*r_obstacle)*ks/(2*np.pi))
 
-        # Store lookup for other obstacles 
-        self.obstacle_boundary_info = dict()
-
         # Store MKFE_FDObstacle attributes 
         super().__init__(
             center,
@@ -1231,6 +1243,27 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
             parent_medium,
             PPW
         )
+
+    def __getstate__(self):
+        """Used when preparing to save a pickled version of this object."""
+        # Prepare all class attributes 
+        state = self.__dict__.copy()
+
+        # Ignore non-serializable attributes
+        state.pop('fd_matrix_LU')
+
+        return state
+    
+    def __setstate__(self, state):
+        """Restore the object from a serialized state"""
+        # Recreate serializable attributes
+        self.__dict__.update(state)
+
+        # Recreate the previously-ignored non-serializable attributes
+        self.fd_matrix_LU = spla.splu(self.fd_matrix)
+    
+
+
 
     @property
     def num_ghost_points_physical_boundary(self):
@@ -1290,44 +1323,28 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
                 local-theta displacement at each gridpoint on 
                 the physical boundary
         """
-        # Parse needed angle/radius data
-        bndry_r_global, bndry_theta_global = (
-            self.grid.local_coords_to_global_polar(np.s_[:,0])
-        )
-        bndry_r_local = self.grid.r_local[:,0]
-        bndry_theta_local = self.grid.theta_local[:,0]
-
-        # Parse incident wave data
-        angle_inc_global = incident_wave.phi
-        k_inc_wave = incident_wave.k
-
-        # Parse current obstacle data
-        xc, yc = self.center_global
-
-        # Get common constant for displacements (based on
-        # incident wave values in global space)
-        displacement_const = (
-            1j * k_inc_wave * incident_wave(self.grid, np.s_[:,0])
-        ) / bndry_r_global
-
-        # Finally, get displacements in local radial and angular 
-        # directions from the above data
-        displacement_local_r = displacement_const * (
-            bndry_r_local * np.cos(bndry_theta_global - angle_inc_global)
-            + xc * np.cos(bndry_theta_local + bndry_theta_global - angle_inc_global)
-            + yc * np.sin(bndry_theta_local + bndry_theta_global - angle_inc_global)
-        )
-        displacement_local_theta = displacement_const * (
-            -bndry_r_local * np.sin(bndry_theta_global - angle_inc_global)
-            - xc * np.sin(bndry_theta_local + bndry_theta_global - angle_inc_global)
-            + yc * np.cos(bndry_theta_local + bndry_theta_global - angle_inc_global)
-        )
+        # Cache incident wave evaluator if that wave not already seen 
+        if not incident_wave.id in self.incident_evaluators:
+            self.incident_evaluators[incident_wave.id] = (
+                IncidentPlanePWaveEvaluator(
+                    incident_wave=incident_wave,
+                    local_grid = self.grid,
+                    medium=self.parent_medium
+                )
+            )
+        
+        # Evaluate incident wave displacmenet in this local coordinate system
+        uinc_evaluator = self.incident_evaluators[incident_wave.id]
+        incident_wave_displacement = uinc_evaluator.displacement(boundary_only=True)
+        displacement_local_r = incident_wave_displacement[:,0]
+        displacement_local_theta = incident_wave_displacement[:,1]
         return displacement_local_r, displacement_local_theta
+        
     
-
     def _get_other_obstacle_displacement_data(
         self,
-        obstacle: MKFE_FDObstacle
+        obstacle: MKFE_FDObstacle,
+        update: bool = True
     ) -> tuple[np.ndarray, np.ndarray]:
         """Get scattered wave displacement data (from the 
         wave scattered from another obstacle) in a local
@@ -1338,6 +1355,7 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
             obstacle (MKFE_FDObstacle): The obstacle whose 
                 scattered wave is incident upon this obstacle's
                 physical boundary
+            update (bool): Whether or not to update 
         
         Returns:
             np.ndarray: An array representing the other obstacle's
@@ -1347,56 +1365,15 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
                 scattered wave's local-theta displacement at each
                 gridpoint on the physical boundary
         """
-        # Cache obstacle boundary info if not already seen
-        self._cache_obstacle_boundary_data(obstacle)
-
         # Get the scattered wave from the provided obstacle at
         # this obstacle's boundary
-        obstacle_boundary_vals = obstacle.get_scattered_wave_at_obstacle(self, boundary_only=True)
-        phi_vals = obstacle_boundary_vals[0]
-        psi_vals = obstacle_boundary_vals[1]
-        boundary_r_vals = (
-            self.obstacle_boundary_info[obstacle.id]['R_local'][0]
-        )  # Only care about local radii of points on physical boundary (which is the [0,:] radial slice of the cached boundary data)
-        
-        # Take radial derivatives at physical boundary
-        # using 2nd-order forward (one-sided) finite differences
-        dphi_dr_local = (
-            -3 * phi_vals[:,0] 
-            + 4 * phi_vals[:,1] 
-            - phi_vals[:,2]
-        ) / (2 * self.grid.dr)
-        dpsi_dr_local = (
-            -3 * psi_vals[:,0] 
-            + 4 * psi_vals[:,1] 
-            - psi_vals[:,2]
-        ) / (2 * self.grid.dr)
-
-        # Take angular derivatives at physical boundary
-        # using 2nd-order centered finite differences
-        # NOTE: This code assumes varying theta coordinates are the 
-        # coordinates that vary along axis=0 in these grids
-        dphi_dtheta_local = (
-            np.roll(phi_vals, -1, axis=0)
-            - np.roll(phi_vals, 1, axis=0)
-        ) / (2 * self.grid.dtheta)
-        dphi_dtheta_local = dphi_dtheta_local[:,0] # Only care about points on physical boundary
-        dpsi_dtheta_local = (
-            np.roll(psi_vals, -1, axis=0)
-            - np.roll(psi_vals, 1, axis=0)
-        ) / (2 * self.grid.dtheta)
-        dpsi_dtheta_local = dpsi_dtheta_local[:,0] # Only care about points on physical boundary
-
-        # Finally, combine these as needed to get displacements 
-        # using Helmholtz decomposition formula
-        # TODO: DO WE NEED TO TAKE INTO ACCOUNT MORE COMPLICATED
-        # GEOMETRY?
-        displacement_local_r = (
-            dphi_dr_local + dpsi_dtheta_local/boundary_r_vals
+        obstacle_displacement = obstacle.get_scattered_wave_at_obstacle(
+            obstacle=self,
+            desired_quantity=QOI.DISPLACEMENT,
+            boundary_only=True
         )
-        displacement_local_theta = (
-            dphi_dtheta_local/boundary_r_vals - dpsi_dr_local
-        )
+        displacement_local_r = obstacle_displacement[:,0]
+        displacement_local_theta = obstacle_displacement[:,1]
         return displacement_local_r, displacement_local_theta
         
 
@@ -2063,7 +2040,8 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         # stacking A-D.
         fd_matrix = sparse.vstack(fd_matrix_block_rows, format='csc')
         return fd_matrix
-    
+
+
     def plot_fd_matrix(self, **kwargs):
         # Actually plot stuff
         super().plot_fd_matrix(**kwargs)
@@ -2109,7 +2087,296 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         plt.ylabel("Equation Number")
         plt.xlabel("Unknown Number")
 
+    
+    def dr_phi(self) -> np.ndarray:
+        """Returns the 1st radial derivative of the phi_m potential
+        at the m-local gridpoints.
+        
+        Uses 2nd order centered differences (with ghost points) 
+        to compute this:
+        dr phi_{i,j} = (phi_{i+1,j}-phi_{i-1,j})/(2 * dr)
+        """
+        return 1/(2 * self.grid.dr) * (
+            self.phi_vals_padded[:,2:] - self.phi_vals_padded[:,:-2]
+        )
+    
+    def dr_psi(self) -> np.ndarray:
+        """Returns the 1st radial derivative of the psi_m potential
+        at the m-local gridpoints.
+        
+        Uses 2nd order centered differences (with ghost points) 
+        to compute this:
+        dr psi_{i,j} = (psi_{i+1,j}-psi_{i-1,j})/(2 * dr)
+        """
+        return 1/(2 * self.grid.dr) * (
+            self.psi_vals_padded[:,2:]
+            - self.psi_vals_padded[:,:-2]
+        )
+    
+    def d2r_phi(self) -> np.ndarray:
+        """Returns the 2nd radial derivative of the phi_m potential
+        at the m-local gridpoints.
+        
+        Uses 2nd order centered differences (with ghost points) 
+        to compute this:
+        d2r phi_{i,j} = (phi_{i+1,j}-2phi{i,j}+phi_{i-1,j}) / (dr^2)
+        """
+        return 1/(self.grid.dr**2) * (
+            self.phi_vals_padded[:,2:] 
+            - 2 * self.phi_vals_padded[:,1:-1]
+            + self.phi_vals_padded[:,:-2]
+        )
+    
+    def d2r_psi(self) -> np.ndarray:
+        """Returns the 2nd radial derivative of the psi_m potential
+        at the m-local gridpoints.
+        
+        Uses 2nd order centered differences (with ghost points) 
+        to compute this:
+        d2r psi_{i,j} = (psi_{i+1,j}-2psi{i,j}+psi_{i-1,j}) / (dr^2)
+        """
+        return 1/(self.grid.dr**2) * (
+            self.psi_vals_padded[:,2:] 
+            - 2 * self.psi_vals_padded[:,1:-1]
+            + self.psi_vals_padded[:,:-2]
+        )
+    
+    def dtheta_phi(self) -> np.ndarray:
+        """Returns the 1st angular derivative of the phi_m potential
+        at the m-local gridpoints.
+        
+        Uses 2nd order centered differences (with ghost points) 
+        to compute this:
+        dtheta phi_{i,j} = (phi_{i,j+1}-phi_{i,j-1}) / (2*dtheta)
+        """
+        return 1/(2*self.grid.dtheta) * (
+            np.roll(self.phi_vals, -1, axis=0)      # Roll of -1 along angular axis brings i+1 gridpoints into line with i gridpoints
+            - np.roll(self.phi_vals, 1, axis=0)     # Roll of +1 along angular axis brings i-1 gridpoints into line with i gridpoints
+        )
+    
+    def dtheta_psi(self) -> np.ndarray:
+        """Returns the 1st angular derivative of the psi_m potential
+        at the m-local gridpoints.
+        
+        Uses 2nd order centered differences (with ghost points) 
+        to compute this:
+        dtheta psi_{i,j} = (psi_{i,j+1}-psi_{i,j-1}) / (2*dtheta)
+        """
+        return 1/(2*self.grid.dtheta) * (
+            np.roll(self.psi_vals, -1, axis=0)      # Roll of -1 along angular axis brings j+1 gridpoints into line with j gridpoints
+            - np.roll(self.psi_vals, 1, axis=0)     # Roll of +1 along angular axis brings j-1 gridpoints into line with j gridpoints
+        )
 
+    def d2theta_phi(self) -> np.ndarray:
+        """Returns the 2nd angular derivative of the phi_m potential
+        at the m-local gridpoints.
+        
+        Uses 2nd order centered differences (with ghost points) 
+        to compute this:
+        d2theta phi_{i,j} = (phi_{i,j+1}-phi_{i,j}+phi_{i,j-1}) / (dtheta^2)
+        """
+        return 1/(self.grid.dtheta**2) * (
+            np.roll(self.phi_vals, -1, axis=0)      # Roll of -1 along angular axis brings j+1 gridpoints into line with j gridpoints
+            - self.phi_vals                         # Original i,j gridpoints
+            + np.roll(self.phi_vals, 1, axis=0)     # Roll of +1 along angular axis brings j-1 gridpoints into line with j gridpoints
+        )
+    
+    def d2theta_psi(self) -> np.ndarray:
+        """Returns the 2nd angular derivative of the psi_m potential
+        at the m-local gridpoints.
+        
+        Uses 2nd order centered differences (with ghost points) 
+        to compute this:
+        d2theta psi_{i,j} = (psi_{i,j+1}-psi_{i,j}+psi_{i,j-1}) / (dtheta^2)
+        """
+        return 1/(self.grid.dtheta**2) * (
+            np.roll(self.psi_vals, -1, axis=0)      # Roll of -1 along angular axis brings j+1 gridpoints into line with j gridpoints
+            - self.psi_vals                         # Original i,j gridpoints
+            + np.roll(self.phi_vals, 1, axis=0)     # Roll of +1 along angular axis brings j-1 gridpoints into line with j gridpoints
+        )
+
+    def dr_dtheta_phi(self) -> np.ndarray:
+        """Returns the mixed 2nd order radial/angular derivative
+        of the phi_m potential at the m-local gridpoints.
+        
+        Uses 2nd order centered differences (with ghost points) 
+        to compute this, using a 4 point stencil
+        d2theta phi_{i,j} = (phi_{i+1,j+1} - phi_{i+1,j-1} - phi_{i-1,j+1} + phi_{i-1,j-1}) / (4*dr*dtheta)
+        """
+        phi_ip1_jp1 = np.roll(self.phi_vals_padded[:,2:], -1, axis=0)
+        phi_ip1_jm1 = np.roll(self.phi_vals_padded[:,2:], 1, axis=0)
+        phi_im1_jp1 = np.roll(self.phi_vals_padded[:,:-2], -1, axis=0)
+        phi_im1_jm1 = np.roll(self.phi_vals_padded[:,:-2], 1, axis=0)
+
+        return 1/(4 * self.grid.dr * self.grid.dtheta) * (
+            phi_ip1_jp1 - phi_ip1_jm1 - phi_im1_jp1 + phi_im1_jm1
+        )
+
+    def dr_theta_psi(self) -> np.ndarray:
+        """Returns the mixed 2nd order radial/angular derivative
+        of the psi_m potential at the m-local gridpoints.
+        
+        Uses 2nd order centered differences (with ghost points) 
+        to compute this, using a 4 point stencil
+        d2theta psi_{i,j} = (psi_{i+1,j+1} - psi_{i+1,j-1} - psi_{i-1,j+1} + psi_{i-1,j-1}) / (4*dr*dtheta)
+        """
+        psi_ip1_jp1 = np.roll(self.psi_vals_padded[:,2:], -1, axis=0)
+        psi_ip1_jm1 = np.roll(self.psi_vals_padded[:,2:], 1, axis=0)
+        psi_im1_jp1 = np.roll(self.psi_vals_padded[:,:-2], -1, axis=0)
+        psi_im1_jm1 = np.roll(self.psi_vals_padded[:,:-2], 1, axis=0)
+
+        return 1/(4 * self.grid.dr * self.grid.dtheta) * (
+            psi_ip1_jp1 - psi_ip1_jm1 - psi_im1_jp1 + psi_im1_jm1
+        )
+
+    def displacement(
+        self,
+        coordinate_system: CoordinateSystem
+    ) -> np.ndarray:
+        """Calculates the displacement at each gridpoint.
+
+        Args:
+            coord_sys (CoordinateSystem): The desired coordinate
+                system to plot these potentials in.
+        """
+        # Parse needed constants and derivative values at each gridpoint
+        dr_phi = self.dr_phi()
+        dr_psi = self.dr_psi()
+        dtheta_phi = self.dtheta_phi()
+        dtheta_psi = self.dtheta_psi()
+        r_vals = self.grid.r_local
+
+        # Get m-local polar displacements 
+        u_r_m = dr_phi + dtheta_psi/r_vals      # Local radial displacement
+        u_theta_m = dtheta_phi/r_vals - dr_psi  # Local angular displacement
+        if coordinate_system is CoordinateSystem.LOCAL_POLAR:
+            return np.stack((u_r_m, u_theta_m), axis=-1)
+        
+        # Get cartesian displacement using x=r*cos(theta), y=r*sin(theta)
+        # NOTE: This is translation invariant, so should be same local or global cartesian coordinates
+        u_x_m = u_r_m * self.grid.cos_theta_local - u_theta_m * self.grid.sin_theta_local
+        u_y_m = u_r_m * self.grid.sin_theta_local + u_theta_m * self.grid.cos_theta_local
+        if coordinate_system is CoordinateSystem.LOCAL_CARTESIAN or coordinate_system is CoordinateSystem.GLOBAL_CARTESIAN:
+            return np.stack((u_x_m, u_y_m), axis=-1)
+        
+        # Get global polar displacements using R^{m -> g} rotation matrix
+        theta_local = self.grid.theta_local
+        theta_global = self.grid.local_coords_to_global_polar()[1]
+        angle_diffs = theta_local - theta_global 
+        rotation_sine = np.sin(angle_diffs)
+        rotation_cos = np.cos(angle_diffs)
+        u_r_global = rotation_cos * u_r_m - rotation_sine * u_theta_m 
+        u_theta_global = rotation_sine * u_r_m + rotation_cos * u_theta_m
+        if coordinate_system is CoordinateSystem.GLOBAL_POLAR:
+            return np.stack((u_r_global, u_theta_global), axis=-1)
+        
+        raise ValueError(f"Invalid coordinate system {coordinate_system}.")
+    
+
+    def get_total_displacement(
+        self,
+        incident_wave: Optional[IncidentPlanePWave] = None,
+        other_obstacles: Optional[list[Self]] = None,
+        coordinate_system: CoordinateSystem = CoordinateSystem.GLOBAL_POLAR
+    ) -> np.ndarray:
+        """Gets the total displacement at each gridpoint at this obstacle.
+        
+        x (or r) displacement is the [:,:,0] value at each gridpoint, and
+        y (or theta) displacement is the [:,:,1] value at each gridpoint.
+        """
+        # Get obstacle displacement as global x/y vectors
+        displacement = self.displacement(coordinate_system)
+        
+        # Get other obstacle displacements as global x/y vectors
+        if other_obstacles is not None:
+            for obstacle in other_obstacles:
+                displacement += obstacle.get_scattered_wave_at_obstacle(
+                    obstacle=self,
+                    boundary_only=False,
+                    desired_quantity=QOI.DISPLACEMENT,
+                    update=False,
+                    coordinate_system=coordinate_system
+                )
+        
+        # Get incident wave displacement as as global x/y vectors
+        if incident_wave is not None:
+            incident_wave_evaluator = self.incident_evaluators[incident_wave.id]
+            displacement += incident_wave_evaluator.displacement(
+                boundary_only=False,
+                coordinate_system=coordinate_system
+            )
+        
+        return displacement
+
+    def plot_displacement_vector_field(
+        self,
+        method:str = 'abs',
+        incident_wave: Optional[IncidentPlanePWave] = None,
+        other_obstacles: Optional[list[Self]] = None,
+        step:int = 1,
+        **kwargs
+    ) -> None:
+        """Plot the displacement vector field at this obstacle.
+
+        If no arguments are provided, plot the scattered phi
+        potential eminating from this obstacle.
+
+        If other obstacles provided, linearly
+        add their psi potential values to this one before 
+        plotting.
+
+        Args:
+            method (str): Whether to plot the complex modulus ('abs'),
+                the real part ('real'), or the imaginary part ('imag')
+                of the psi scattered potential.
+                Default is 'abs'.
+            incident_wave (IncidentPlanePWave): If provided, the incident
+                plane p-wave on this obstacle.
+            other_obstacles (list[Self]): If provided, a list
+                of other obstacles whose scattered potentials 
+                are incident upon this obstacle.
+            step (int): The stride length while choosing which 
+                gridpoints to plot arrows at (defaults to 1, 
+                meaning plotting every gridpoint)
+            *cmap (Colormap): The Matplotlib colormap object 
+                to use for plotting (cm.coolwarm is used if none
+                is provided)
+        """
+        displacement = self.get_total_displacement(
+            incident_wave=incident_wave,
+            other_obstacles=other_obstacles,
+            coordinate_system=CoordinateSystem.GLOBAL_CARTESIAN
+        )
+        
+        # Plot the displacement vector field
+        X,Y = self.grid.local_coords_to_global_XY()
+        if method.lower().strip() == 'abs':
+            displacement_x = np.abs(displacement[:,:,0])
+            displacement_y = np.abs(displacement[:,:,1])
+        elif method.lower().strip() == 'real':
+            displacement_x = np.real(displacement[:,:,0])
+            displacement_y = np.real(displacement[:,:,1])
+        elif method.lower().strip() == 'imag':
+            displacement_x = np.imag(displacement[:,:,0])
+            displacement_y = np.imag(displacement[:,:,1])
+        else:
+            raise ValueError(f"Error: Method {method} not one of the valid plotting methods ['abs', 'real', or 'imag']")
+
+        displacement_magnitude = np.sqrt(displacement_x**2 + displacement_y**2)
+        displacement_x_direction_only = displacement_x / (displacement_magnitude + 1e-8)    # Avoid division by zero by adding +1e-8
+        displacement_y_direction_only = displacement_y / (displacement_magnitude + 1e-8)
+        plt.quiver(
+            X[::step,::step],              # X-positions of arrow tails
+            Y[::step,::step],              # Y-position of arrow tails
+            displacement_x_direction_only[::step,::step],  # X-coordinate of arrow pointing directions
+            displacement_y_direction_only[::step,::step],  # Y-coordinate of arrow pointing directions
+            displacement_magnitude[::step,::step],         # Color of arrows (depends on original magnitude of displacement)
+            angles='xy',                    # Arrow direction happens in data (X/Y) coordinates; 
+            scale=50,
+            width=0.002,
+            headlength=3.4,
+            headaxislength=3
+        )
 
 class CircularObstacleGeometry:
     """A basic object to hold a circular obstacle's geometry
