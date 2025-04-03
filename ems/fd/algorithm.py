@@ -1,3 +1,4 @@
+from typing import Optional, Self
 import numpy as np 
 import json
 import logging
@@ -33,34 +34,37 @@ class ErrorConvergenceRatesPolar:
         self.Linfty_errs = []
         self.Linfty_rates = [np.nan]        # Padding NaN since we really need 2 gridpoints to analyze convergence
     
-    def _interpolate_fine_to_coarse(
+    def _interpolate_grid_vals(
         self,
-        coarse_grid: FDLocalPolarGrid,
-        fine_grid: FDLocalPolarGrid,
-        fine_vals: np.ndarray,
+        source_grid: FDLocalPolarGrid,
+        source_vals: np.ndarray,
+        dest_grid: FDLocalPolarGrid,
     ) -> np.ndarray:
-        """Interpolates the fine grid values onto the coarse grid.
+        """Interpolates source grid values onto a destination grid.
         
-        fine_vals should have the same 2D shape as the fine local grid.
+        source_vals should have the same 2D shape as source_grid.
 
-        Assumes that theta bounds are [0, 2*pi] and r bounds are [r_min, r_max]
-        on both grids.
-        
+        Assumes that the grids have the same bounds on both axes.
         """
-        # Set up interpolation over fine grid.
-        r_gridpoints_fine, theta_gridpoints_fine  = fine_grid.r_vals, fine_grid.theta_vals
-        fine_grid_interpolation_func = RegularGridInterpolator(
-            (theta_gridpoints_fine, r_gridpoints_fine), 
-            fine_vals,
+        # Set up interpolation over source grid.
+        r_gridpoints_source, theta_gridpoints_source  = source_grid.r_vals, source_grid.theta_vals
+        theta_gridpoints_source_extended = np.array(list(theta_gridpoints_source) + [2 * np.pi])     # Allows 2pi (idenfitied with 0, the first gridpoint) to actually be an upper bound
+        source_vals_extended = np.vstack((source_vals, source_vals[0]))     # Rolls over theta=0 gridpoints to be theta=2pi gridpoints
+        
+        source_grid_interpolation_func = RegularGridInterpolator(
+            (theta_gridpoints_source_extended, r_gridpoints_source), 
+            source_vals_extended,
             method='cubic'
         )
         
-        # Get interpolation on coarse grid
-        r_coarse_1d = np.ravel(coarse_grid.r_local)
-        theta_coarse_1d = np.ravel(coarse_grid.theta_local)
-        gridpoints_of_interest = np.column_stack((theta_coarse_1d, r_coarse_1d))
-        interpolated_values_1d = fine_grid_interpolation_func(gridpoints_of_interest)
-        return np.reshape(interpolated_values_1d, shape=coarse_grid.shape)
+        # Get interpolation on destination grid
+        r_dest_1d = np.ravel(dest_grid.r_local)
+        theta_dest_1d = np.ravel(dest_grid.theta_local)
+        gridpoints_of_interest = np.column_stack((theta_dest_1d, r_dest_1d))
+        interpolated_values_1d = source_grid_interpolation_func(gridpoints_of_interest)
+        
+        # Reshape to be same shape as fine grid
+        return np.reshape(interpolated_values_1d, shape=dest_grid.shape)
 
 
     def _approximate_error_orders(self):
@@ -68,7 +72,7 @@ class ErrorConvergenceRatesPolar:
         extrapolation on the two most current error data points
         in the error arrays/grid parameter array."""
         if len(self.h) < 2:
-            return  # Can't approximate error with less than 2 data points
+            return      # Can't approximate error with less than 2 data points
         
         grid_param_ratio = np.log(self.h[-2] / self.h[-1])
         
@@ -81,42 +85,46 @@ class ErrorConvergenceRatesPolar:
         self.Linfty_rates.append(Linfty_order)
 
 
-    def add_new_iteration(
+    def add_new_iteration_richardson_extrapolation(
         self,
         coarse_grid: FDLocalPolarGrid,
         fine_grid: FDLocalPolarGrid,
         coarse_vals: np.ndarray,
         fine_vals: np.ndarray
     ):
-        """Gets information from new iteration.
+        """Gets convergence information from new iteration using a Richardson
+        extrapolation scheme.
         
-        Compares coarse grid values to fine grid values, all on coarse gridpoints only.
-        (using cubic interpolation of fine solution onto coarse grid for comparison).
+        Compares coarse grid values to fine grid values by interpolating coarse values
+        on fine gridpoints.
+        Uses cubic interpolation of coarse solution onto fine grid.
         """
-        # Get fine values on coarse grid
-        fine_vals = self._interpolate_fine_to_coarse(coarse_grid, fine_grid, fine_vals)
+        # Get coarse values on fine grid
+        coarse_vals_interpolated = self._interpolate_grid_vals(coarse_grid, coarse_vals, fine_grid)
 
-        # Get coarse local polar grid radii (for L2 convergence)
-        r_coarse = coarse_grid.r_local
+        # Get fine local polar grid radii (for L2 convergence)
+        r_fine = fine_grid.r_local
+        dr_fine = fine_grid.dr 
+        dtheta_fine = fine_grid.dtheta
 
         # Compute AMPLITUDE ERROR quantities:
         # 1) Absolute value of difference between coarse and fine solutions
         # 2) Absolute value of fine solution (for relative-L2 norm analysis)
         amplitude_fine = np.abs(fine_vals)
-        amplitude_diff = np.abs(np.abs(coarse_vals) - amplitude_fine)
+        amplitude_diff = np.abs(np.abs(coarse_vals_interpolated) - amplitude_fine)
         
         # Approximate L2 norm, Relative L2 norm, and L-infinity norm errors
         # of the differences in amplitude for coarse-to-fine comparison
         L2_err = np.sqrt(
             np.sum(
-                amplitude_diff**2 * r_coarse * coarse_grid.dr * coarse_grid.dtheta
+                amplitude_diff**2 * r_fine * dr_fine * dtheta_fine
             )
         )
         self.L2_errs.append(L2_err)
 
         L2_norm_fine = np.sqrt(
             np.sum(
-                amplitude_fine**2 * r_coarse * coarse_grid.dr * coarse_grid.dtheta
+                amplitude_fine**2 * r_fine * dr_fine * dtheta_fine
             )
         )
         L2_relative_err = L2_err / L2_norm_fine
@@ -131,6 +139,62 @@ class ErrorConvergenceRatesPolar:
 
         # If possible, approximate error order for latest two datapoints 
         self._approximate_error_orders()
+
+    def add_new_iteration_reference(
+        self,
+        coarse_grid: FDLocalPolarGrid,
+        reference_grid: FDLocalPolarGrid,
+        coarse_vals: np.ndarray,
+        reference_vals: np.ndarray
+    ):
+        """Gets convergence/error information from new iteration by
+        comparing to a reference solution.
+        
+        Compares coarse grid values to reference grid values,
+        all on coarse gridpoints only, by interpolating the reference solution onto 
+        the coarse gridpoints
+        (using cubic interpolation of fine solution onto coarse grid for comparison).
+        """
+        # Get fine values on coarse grid
+        reference_vals = self._interpolate_grid_vals(reference_grid, reference_vals, coarse_grid)
+
+        # Get coarse local polar grid radii (for L2 convergence)
+        r_coarse = coarse_grid.r_local
+
+        # Compute AMPLITUDE ERROR quantities:
+        # 1) Absolute value of difference between coarse and fine solutions
+        # 2) Absolute value of fine solution (for relative-L2 norm analysis)
+        amplitude_reference = np.abs(reference_vals)
+        amplitude_diff = np.abs(np.abs(coarse_vals) - amplitude_reference)
+        
+        # Approximate L2 norm, Relative L2 norm, and L-infinity norm errors
+        # of the differences in amplitude for coarse-to-fine comparison
+        L2_err = np.sqrt(
+            np.sum(
+                amplitude_diff**2 * r_coarse * coarse_grid.dr * coarse_grid.dtheta
+            )
+        )
+        self.L2_errs.append(L2_err)
+
+        L2_norm_reference = np.sqrt(
+            np.sum(
+                amplitude_reference**2 * r_coarse * coarse_grid.dr * coarse_grid.dtheta
+            )
+        )
+        L2_relative_err = L2_err / L2_norm_reference
+        self.L2_relative_errs.append(L2_relative_err)
+
+        Linfty_err = np.max(amplitude_diff)
+        self.Linfty_errs.append(Linfty_err)
+
+        # Store grid parameter and resolution (coarse grid's dtheta used) 
+        self.h.append(coarse_grid.dtheta) 
+        self.grid_resolutions.append((coarse_grid.num_radial_gridpoints, coarse_grid.num_angular_gridpoints))
+
+        # If possible, approximate error order for latest two datapoints 
+        self._approximate_error_orders()
+
+    
 
 
 
@@ -150,12 +214,75 @@ class ScatteringConvergenceAnalyzerPolar:
             for i in range(num_obstacles)
         }
 
-    def analyze_convergence(
+    def analyze_convergence_reference(
+        self,
+        solved_obstacles: dict[int, list[Circular_MKFE_FDObstacle]],
+        reference_solution: list[Circular_MKFE_FDObstacle]
+    ):
+        """Analyzes convergence at various PPW resolutions for
+        a given obstacle setup by comparing to a refined reference
+        grid solution.
+        
+        Args:
+            solved_obstacles: A dictionary whose keys are PPWs resolutions,
+                and whose values are a list of solved obstacles at
+                that resolution value (should be same obstacles with
+                same IDs, but more refined grids as PPW increases)
+        """
+        # Reset PPW and phi/psi convergence rates lists
+        self.PPWs = sorted(list(solved_obstacles.keys()))
+        for i in self.phi_rates.keys():
+            self.phi_rates[i] = ErrorConvergenceRatesPolar()
+            self.psi_rates[i] = ErrorConvergenceRatesPolar()
+
+        solved_obstacles_coarse_to_fine = sorted(solved_obstacles.items())
+        for i in range(len(solved_obstacles_coarse_to_fine) - 1):
+            # Get coarse/fine obstacles at this resolution lavel
+            coarse_obstacles = solved_obstacles_coarse_to_fine[i][1]
+            reference_solution
+
+            # Sort obstacles by id 
+            def sort_by_id(obstacle: Circular_MKFE_FDObstacle):
+                return obstacle.id
+            coarse_obstacles.sort(key=sort_by_id)
+            reference_solution.sort(key=sort_by_id)
+
+            for i, (coarse_obs, reference_obs) in enumerate(zip(coarse_obstacles, reference_solution)):
+                # Validate we're talking about the same obstacle 
+                if coarse_obs.id != reference_obs.id:
+                    raise RuntimeError("ERROR: Sorted obstacle IDs don't match up!")
+                obs_id = coarse_obs.id 
+                
+                # Get scattered phi/psi values on each obstacle grid
+                other_coarse_obstacles = coarse_obstacles[:i] + coarse_obstacles[i+1:]
+                other_fine_obstacles = reference_solution[:i] + reference_solution[i+1:]
+
+                scattered_phi_coarse = coarse_obs.get_total_phi(other_obstacles=other_coarse_obstacles)
+                scattered_psi_coarse = coarse_obs.get_total_psi(other_obstacles=other_coarse_obstacles)
+                scattered_phi_reference = reference_obs.get_total_phi(other_obstacles=other_fine_obstacles)
+                scattered_psi_reference = reference_obs.get_total_psi(other_obstacles=other_fine_obstacles)
+
+                # Analyze convergence at this step 
+                self.phi_rates[obs_id].add_new_iteration_reference(
+                    coarse_grid=coarse_obs.grid,
+                    reference_grid=reference_obs.grid,
+                    coarse_vals=scattered_phi_coarse,
+                    reference_vals=scattered_phi_reference
+                )
+                self.psi_rates[obs_id].add_new_iteration_reference(
+                    coarse_grid=coarse_obs.grid,
+                    reference_grid=reference_obs.grid,
+                    coarse_vals=scattered_psi_coarse,
+                    reference_vals=scattered_psi_reference
+                )
+
+    def analyze_convergence_richardson_extrapolation(
         self,
         solved_obstacles: dict[int, list[Circular_MKFE_FDObstacle]]
     ):
         """Analyzes convergence at various PPW resolutions for
-        a given obstacle setup.
+        a given obstacle setup using a point-by-point coarse-to-fine
+        comparison.
         
         Args:
             solved_obstacles: A dictionary whose keys are PPWs resolutions,
@@ -197,13 +324,13 @@ class ScatteringConvergenceAnalyzerPolar:
                 scattered_psi_fine = fine_obs.get_total_psi(other_obstacles=other_fine_obstacles)
 
                 # Analyze convergence at this step 
-                self.phi_rates[obs_id].add_new_iteration(
+                self.phi_rates[obs_id].add_new_iteration_richardson_extrapolation(
                     coarse_grid=coarse_obs.grid,
                     fine_grid=fine_obs.grid,
                     coarse_vals=scattered_phi_coarse,
                     fine_vals=scattered_phi_fine
                 )
-                self.psi_rates[obs_id].add_new_iteration(
+                self.psi_rates[obs_id].add_new_iteration_richardson_extrapolation(
                     coarse_grid=coarse_obs.grid,
                     fine_grid=fine_obs.grid,
                     coarse_vals=scattered_psi_coarse,
@@ -356,7 +483,8 @@ class MKFE_FD_ScatteringProblem:
         self,
         obstacle_config_file: str,
         medium_config_file: str,
-        numerical_config_file: str
+        numerical_config_file: str,
+        reference_solution: Optional[Self] = None
     ):
         """Initialize a multiple-scattering problem.
         
@@ -370,6 +498,10 @@ class MKFE_FD_ScatteringProblem:
             obstacle_config_file (str): A path to the obstacle
                 configuration JSON file that contains information
                 about obstacle geometries and boundary conditions.
+            reference_solution (MKFE_FD_ScatteringProblem): An optional
+                reference solution on a very refined grid. If multiple 
+                grids are provided, the most refined is taken to be
+                the reference solution.
         """
         # Get medium and incident wave info from config
         # (populates self.medium and self.incident_wave)
@@ -414,6 +546,12 @@ class MKFE_FD_ScatteringProblem:
         )
         self.problem_label = f"scattering_{obstacle_configuration_label}_{medium_configuration_label}_{numerical_configuration_label}"
         
+        # Get reference solution
+        self.reference_obstacles = None 
+        if reference_solution is not None:
+            self.reference_obstacles = reference_solution.obstacles[max(reference_solution.PPWs)]
+
+
 
     def _add_obstacle_geometries_from_config(self, config_file:str) -> None:
         """Adds obstacles from a configuration JSON file.
@@ -667,11 +805,25 @@ class MKFE_FD_ScatteringProblem:
             
 
     def analyze_convergence(self) -> ScatteringConvergenceAnalyzerPolar:
-        """Analyzes the approximate convergence rate using Richardson extrapolation."""
-        if len(self.obstacles.keys()) < 3:
-            raise ValueError("Cannot analyze convergence unless there are 3 distinct PPW solutions.")
+        """Analyzes the approximate convergence rate.
+        
+        Uses Richardson extrapolation if no reference solution is provided.
+        Otherwise, uses a standard convergence analysis, treating the reference
+        solution as the exact solution on the provided grid.
+        """
+        if self.reference_obstacles is not None:
+            self.convergence_analyzer.analyze_convergence_reference(
+                solved_obstacles=self.obstacles,
+                reference_solution=self.reference_obstacles
+            )
+        else:
+            # Analyze by point-by-point Richardson extrapolation
+            # from coarse to fine grids
+            if len(self.obstacles.keys()) < 3:
+                raise ValueError("Cannot analyze convergence using Richardson extrapolation unless there are 3 distinct PPW solutions.")
 
-        self.convergence_analyzer.analyze_convergence(self.obstacles)
+            self.convergence_analyzer.analyze_convergence_richardson_extrapolation(self.obstacles)
+        
         return self.convergence_analyzer
 
 
