@@ -6,7 +6,9 @@ import cloudpickle
 from matplotlib import pyplot as plt
 from scipy.interpolate import RegularGridInterpolator
 from tabulate import tabulate
+import sys  
 import os 
+import re
 
 from ..base.medium import LinearElasticMedium
 from ..base.waves import IncidentPlanePWave
@@ -15,6 +17,7 @@ from ..base.exceptions import (
 )
 from ..base.consts import Algorithm, ErrorType
 from ..base.obstacles import BaseObstacle
+from ..base.text_parsing import get_filename_base
 from .grids import FDPolarGrid_ArtBndry, FDLocalPolarGrid
 from .obstacles import (
     MKFE_FDObstacle, Circular_MKFE_FDObstacle,
@@ -341,48 +344,65 @@ class ScatteringConvergenceAnalyzerPolar:
         self,
         convergence_rates: dict[int, ErrorConvergenceRatesPolar], 
         quantity: str,
-        fmt: str = 'fancy_grid'
+        fmt: str = 'fancy_grid',
+        file: Optional[str] = None,
+        append: bool = False
     ) -> None:
         """Displays a given convergence rate table for a given quantity"""
-        sorted_obstacle_ids = sorted(convergence_rates.keys())
-        obstacle_table_headers = ["PPW", "h", "Grid Resolution", "L2 Error", "L2 Observed Order", "Relative L2 Error",  "Relative L2 Observed Order", "L-Infinity Error", "L-Infinity Observed Order"]
-        
-        print("\n===========================================================")
-        print(f"             CONVERGENCE ANALYSIS: {quantity}             ")
-        print("===========================================================\n")
-        
-        for obs_id in sorted_obstacle_ids:
-            convergence_rate = convergence_rates[obs_id]
-            table = [
-                [PPW, h, f"{resolution[0]} x {resolution[1]}", L2, L2_order, L2rel, L2rel_order, Linfty, Linfty_order]
-                for PPW, h, resolution, L2, L2_order, L2rel, L2rel_order, Linfty, Linfty_order in zip(
-                    self.PPWs, convergence_rate.h, convergence_rate.grid_resolutions,
-                    convergence_rate.L2_errs, convergence_rate.L2_rates,
-                    convergence_rate.L2_relative_errs, convergence_rate.L2_relative_rates,
-                    convergence_rate.Linfty_errs, convergence_rate.Linfty_rates
+        mode = "a" if append else "w"       # Whether to write or append to file
+        output = open(file, mode) if file is not None else sys.stdout
+        with output as outfile:
+            sorted_obstacle_ids = sorted(convergence_rates.keys())
+            obstacle_table_headers = ["PPW", "h", "Grid Resolution", "L2 Error", "L2 Observed Order", "Relative L2 Error",  "Relative L2 Observed Order", "L-Infinity Error", "L-Infinity Observed Order"]
+            
+            print("\n===========================================================", file=output)
+            print(f"             CONVERGENCE ANALYSIS: {quantity}             ", file=output)
+            print("===========================================================\n", file=output)
+            
+            for obs_id in sorted_obstacle_ids:
+                convergence_rate = convergence_rates[obs_id]
+                table = [
+                    [PPW, h, f"{resolution[0]} x {resolution[1]}", L2, L2_order, L2rel, L2rel_order, Linfty, Linfty_order]
+                    for PPW, h, resolution, L2, L2_order, L2rel, L2rel_order, Linfty, Linfty_order in zip(
+                        self.PPWs, convergence_rate.h, convergence_rate.grid_resolutions,
+                        convergence_rate.L2_errs, convergence_rate.L2_rates,
+                        convergence_rate.L2_relative_errs, convergence_rate.L2_relative_rates,
+                        convergence_rate.Linfty_errs, convergence_rate.Linfty_rates
+                    )
+                ]
+                print(f"\n---------------- OBSTACLE {obs_id} ----------------\n", file=output)
+                print(
+                    tabulate(
+                        table,
+                        headers=obstacle_table_headers,
+                        tablefmt=fmt
+                    ), file=output
                 )
-            ]
-            print(f"\n---------------- OBSTACLE {obs_id} ----------------\n")
-            print(
-                tabulate(
-                    table,
-                    headers=obstacle_table_headers,
-                    tablefmt=fmt
-                )
-            )
 
     def _draw_convergence_plots(
         self,
         convergence_rates: dict[int, ErrorConvergenceRatesPolar], 
         quantity: str,
+        folder: Optional[str] = None
     ) -> None:
-        sorted_obstacle_ids = sorted(convergence_rates.keys())
+        # Define the plot function to save to a file if a folder is provided
+        # and to plot it to a screen otherwise 
+        def plotfig(figure_name: str) -> None:
+            if folder is not None:
+                figure_path = os.path.join(folder, f"{figure_name}.png")
+                plt.savefig(figure_path)
+                plt.clf()
+            else:
+                plt.plot()
+        
+        quantity_no_latex_formatting = re.sub(r'[$\\]', '', quantity)   # For figure saving filename purposes
 
         # Get errors for each obstacle
         h = []
         L2_errs = []
         L2_relative_errs = []
         Linfty_errs = []
+        sorted_obstacle_ids = sorted(convergence_rates.keys())
         for obs_id in sorted_obstacle_ids:
             h.append(convergence_rates[obs_id].h)
             L2_errs.append(convergence_rates[obs_id].L2_errs)
@@ -397,7 +417,7 @@ class ScatteringConvergenceAnalyzerPolar:
         plt.title(f"{quantity} - $L_2$ Errors")
         plt.xlabel("Grid Parameter $h$")
         plt.ylabel("Error")
-        plt.show()
+        plotfig(f'L2_errors_{quantity_no_latex_formatting}')
 
         # Plot Relative L2 errors
         for i, h_vals, obstacle_errs in zip(sorted_obstacle_ids, h, L2_relative_errs):
@@ -407,7 +427,7 @@ class ScatteringConvergenceAnalyzerPolar:
         plt.title(f"{quantity} - Relative $L_2$ Errors")
         plt.xlabel("Grid Parameter $h$")
         plt.ylabel("Error")
-        plt.show()
+        plotfig(f'Relative_L2_errors_{quantity_no_latex_formatting}')
 
         # Plot L-Infinity errors
         for i, h_vals, obstacle_errs in zip(sorted_obstacle_ids, h, Linfty_errs):
@@ -417,34 +437,47 @@ class ScatteringConvergenceAnalyzerPolar:
         plt.title(rf"{quantity} - $L_{{\infty}}$ Errors")
         plt.xlabel("Grid Parameter $h$")
         plt.ylabel("Error")
+        plotfig(f'L_Infinity_errors_{quantity_no_latex_formatting}')
         plt.show()
 
     
     def display_convergence(
         self,
-        table_fmt: str = 'fancy_grid'
+        table_fmt: str = 'fancy_grid',
+        text: bool = True,
+        plots: bool = True,
+        text_filepath: Optional[str] = None,
+        plots_folderpath: Optional[str] = None
     ):
-        # Display phi/psi convergence tables
-        self._print_convergence_tables(
-            convergence_rates=self.phi_rates,
-            quantity='phi',
-            fmt=table_fmt
-        )
-        self._print_convergence_tables(
-            convergence_rates=self.psi_rates,
-            quantity='psi',
-            fmt=table_fmt
-        )
+        if text:
+            # Display phi/psi convergence tables
+            self._print_convergence_tables(
+                convergence_rates=self.phi_rates,
+                quantity='phi',
+                fmt=table_fmt,
+                file=text_filepath,
+                append=False
+            )
+            self._print_convergence_tables(
+                convergence_rates=self.psi_rates,
+                quantity='psi',
+                fmt=table_fmt,
+                file=text_filepath,
+                append=True
+            )
 
-        # Display phi/psi convergence plots
-        self._draw_convergence_plots(
-            convergence_rates=self.phi_rates,
-            quantity='$\phi$'
-        )
-        self._draw_convergence_plots(
-            convergence_rates=self.psi_rates,
-            quantity='$\psi$'
-        )
+        if plots:
+            # Display phi/psi convergence plots
+            self._draw_convergence_plots(
+                convergence_rates=self.phi_rates,
+                quantity='$\phi$',
+                folder=plots_folderpath
+            )
+            self._draw_convergence_plots(
+                convergence_rates=self.psi_rates,
+                quantity='$\psi$',
+                folder=plots_folderpath
+            )
 
         
 
@@ -529,22 +562,11 @@ class MKFE_FD_ScatteringProblem:
 
         # Create a name for this scattering problem (for recalling
         # from storage)
-        obstacle_configuration_label = (
-            os.path.splitext(
-                os.path.basename(obstacle_config_file)
-            )[0]
+        self.problem_label = get_filename_base(
+            obstacle_config=obstacle_config_file,
+            medium_config=medium_config_file,
+            numerical_config=numerical_config_file
         )
-        medium_configuration_label = (
-            os.path.splitext(
-                os.path.basename(medium_config_file)
-            )[0]
-        )
-        numerical_configuration_label = (
-            os.path.splitext(
-                os.path.basename(numerical_config_file)
-            )[0]
-        )
-        self.problem_label = f"scattering_{obstacle_configuration_label}_{medium_configuration_label}_{numerical_configuration_label}"
         
         # Get reference solution
         self.reference_obstacles = None 
@@ -615,9 +637,8 @@ class MKFE_FD_ScatteringProblem:
         # Parse numerical method info
         self.PPWs = [int(PPW) for PPW in config['PPWs']]
         self.num_farfield_terms = int(config['num_farfield_terms'])
-
-
-
+        self.tol = config['tol']
+        self.maxiter = config['maxiter']
 
     def _setup_scattering_obstacles_for_PPW(
         self,
@@ -662,8 +683,6 @@ class MKFE_FD_ScatteringProblem:
     def _solve_PPW_Gauss_Seidel(
         self,
         PPW: int,
-        tol: float = 1e-5,
-        maxiter: int = 100
     ) -> tuple[list[MKFE_FDObstacle], int]:
         """Solve the multiple scattering problem at a given PPW using
         Gauss Seidel algorithm.
@@ -671,10 +690,10 @@ class MKFE_FD_ScatteringProblem:
         Assumes that self.obstacles is populated with a fresh set 
         of obstacles with unknowns all set to zeros.
         """
-        logging.debug(f"Using Gauss-Seidel iteration with PPW = {PPW}, tol = {tol:.4e}, and maxiter = {maxiter}")
+        logging.debug(f"Using Gauss-Seidel iteration with PPW = {PPW}, tol = {self.tol:.4e}, and maxiter = {self.maxiter}")
 
         prev_unknowns = np.hstack([obstacle.fd_unknowns for obstacle in self.obstacles[PPW]])   # Will be all zeros to start out with 
-        for itr in range(maxiter):
+        for itr in range(self.maxiter):
             logging.debug(f"Beginning iteration {itr}")
             cur_unknowns = np.array([])
             
@@ -694,7 +713,7 @@ class MKFE_FD_ScatteringProblem:
             prev_unknowns = cur_unknowns
             
             logging.info(f"Max Error at iteration {itr}: {max_err:.5e}")
-            if max_err < tol:
+            if max_err < self.tol:
                 logging.info(f"Gauss-Seidel Iteration Converged for PPW = {PPW} after {itr} iterations with max-norm error {max_err:.5e}")
                 return self.obstacles[PPW], itr
             
@@ -706,18 +725,16 @@ class MKFE_FD_ScatteringProblem:
         
         # Getting here means that the algorithm did not converge.
         logging.exception(
-            f"solve_PPW() with PPW={PPW} did not converge in {maxiter} iterations."
+            f"solve_PPW() with PPW={PPW} did not converge in {self.maxiter} iterations."
         )
         raise MaxIterationsExceedException(
-            f"solve_PPW() with PPW={PPW} did not converge in {maxiter} iterations."
+            f"solve_PPW() with PPW={PPW} did not converge in {self.maxiter} iterations."
         )
     
     def solve_PPW(
         self,
         PPW: int,
-        algorithm: Algorithm,
-        tol: float = 1e-5,
-        maxiter: int = 100
+        algorithm: Algorithm
     ) -> tuple[list[MKFE_FDObstacle], int]:
         """Solve the multiple-elastic-scattering problem for grids
         with a resolution corresponding to a given number of 
@@ -728,10 +745,6 @@ class MKFE_FD_ScatteringProblem:
                 determine obstacle grid resolution.
             algorithm (algorithm): The iterative algorithm to use
                 to solve the single-scattering systems
-            tol (float): The minimum error tolerance between 
-                successive iterations to determine convergence
-            maxiter (int): The maximum number of iterations to
-                run the given iterative algorithm
 
         Returns:
             list[MKFE_FDObstacle]: A list of the obstacles
@@ -755,9 +768,8 @@ class MKFE_FD_ScatteringProblem:
         self._setup_scattering_obstacles_for_PPW(PPW)
 
         # Iterate using the desired algorithm
-        # TODO: (Potentially) Add GMRES as an option
         if algorithm is Algorithm.GAUSS_SEIDEL:
-            return self._solve_PPW_Gauss_Seidel(PPW, tol, maxiter)
+            return self._solve_PPW_Gauss_Seidel(PPW)
         else:
             raise ValueError(
                 "Only supported iterative algorithm is Algorithm.GAUSS_SEIDEL at the moment"
@@ -766,8 +778,6 @@ class MKFE_FD_ScatteringProblem:
     def solve_PPWs(
         self,
         algorithm: Algorithm,
-        tol: float = 1e-5,
-        maxiter: int = 100,
         reference: bool = False,
         pickle: bool = False
     ) -> None:
@@ -779,12 +789,7 @@ class MKFE_FD_ScatteringProblem:
         """
         for PPW in self.PPWs:
             try:
-                self.solve_PPW(
-                    PPW,
-                    algorithm,
-                    tol,
-                    maxiter
-                )
+                self.solve_PPW(PPW, algorithm)
             except (AlgorithmDivergedException, MaxIterationsExceedException):
                 logging.exception(f"Saved PPW={PPW} at corrupted state. Continuing on with remaining PPWs...")
 
@@ -795,11 +800,11 @@ class MKFE_FD_ScatteringProblem:
         # If desired, pickle this object for further analysis
         if pickle:
             if reference:
-                outfile_name = f"results/reference/{self.problem_label}.pickle"
+                outfile_name = os.path.join("results", "solved_objects", "reference", f"{self.problem_label}.pickle")
                 with open(outfile_name, 'wb') as outfile:
                     cloudpickle.dump(self, outfile)
             else:
-                outfile_name = f"results/{self.problem_label}.pickle"
+                outfile_name = os.path.join("results", "solved_objects", "numerical", f"{self.problem_label}.pickle")
                 with open(outfile_name, 'wb') as outfile:
                     cloudpickle.dump(self, outfile)
             
@@ -827,7 +832,7 @@ class MKFE_FD_ScatteringProblem:
         return self.convergence_analyzer
 
 
-    def plot_total_phi(self, PPW: int):
+    def plot_total_phi(self, PPW: int, plot_folder: Optional[str] = None):
         """Plot total phi for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
@@ -844,12 +849,18 @@ class MKFE_FD_ScatteringProblem:
                 u_inc=self.incident_wave,
                 other_obstacles=other_obstacles
             )
-
+        
+        # Show/save plot
         plt.title(f"Total $\phi$ (PPW = {PPW})")
         plt.colorbar()
-        plt.show()
+        if plot_folder is None:
+            plt.show()
+        else:
+            plot_img_path = os.path.join(plot_folder, "phi_total_contour.png")
+            plt.savefig(plot_img_path)
+            plt.clf()
 
-    def plot_total_psi(self, PPW: int):
+    def plot_total_psi(self, PPW: int, plot_folder: Optional[str] = None):
         """Plot total psi for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
@@ -867,11 +878,18 @@ class MKFE_FD_ScatteringProblem:
                 other_obstacles=other_obstacles
             )
 
+        # Display plot
         plt.title(f"Total $\psi$ (PPW = {PPW})")
         plt.colorbar()
-        plt.show()
+        if plot_folder is None:
+            plt.show()
+        else:
+            plot_img_path = os.path.join(plot_folder, "psi_total_contour.png")
+            plt.savefig(plot_img_path)
+            plt.clf()
 
-    def plot_total_displacement(self, PPW:int, step:int=1):
+
+    def plot_total_displacement(self, PPW:int, step:int=1, plot_folder: Optional[str] = None):
         """Plot total displacement for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
@@ -888,10 +906,16 @@ class MKFE_FD_ScatteringProblem:
                 incident_wave=self.incident_wave,
                 step=step
             )
-            
+        
+        # Display plot
         plt.title(f"Total Displacement Field (PPW = {PPW})")
         plt.colorbar()
-        plt.show()
+        if plot_folder is None:
+            plt.show()
+        else:
+            plot_img_path = os.path.join(plot_folder, "total_displacement_vector_field.png")
+            plt.savefig(plot_img_path)
+            plt.clf()
                 
 
         
