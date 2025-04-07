@@ -9,7 +9,9 @@ from tabulate import tabulate
 import sys  
 import os 
 import re
+import tracemalloc
 import gc 
+from memory_profiler import profile
 
 from ..base.medium import LinearElasticMedium
 from ..base.waves import IncidentPlanePWave
@@ -18,13 +20,14 @@ from ..base.exceptions import (
 )
 from ..base.consts import Algorithm, ErrorType
 from ..base.obstacles import BaseObstacle
-from ..base.text_parsing import get_filename_base
+from ..base.text_parsing import get_full_configuration_filename_base, get_filename_base
 from .grids import FDPolarGrid_ArtBndry, FDLocalPolarGrid
 from .obstacles import (
     MKFE_FDObstacle, Circular_MKFE_FDObstacle,
     CircularObstacleGeometry
 )
 from .solvers import FD_SparseLUSolver
+
 
 class ErrorConvergenceRatesPolar:
     """A class for analyzing convergence rates on 
@@ -513,17 +516,13 @@ class MKFE_FD_ScatteringProblem:
         obstacle_config_file: str,
         medium_config_file: str,
         numerical_config_file: str,
-        reference_solution: Optional[Self] = None
+        reference_config_file: Optional[str] = None
     ):
         """Initialize a multiple-scattering problem.
         
         Args:
             medium (LinearElasticMedium): The elastic medium where
                 the scattering problem is taking place 
-            incident_wave (IncidentPlaneWave): The incident plane 
-                wave for this scattering problem 
-            num_farfield_terms (int): The number of terms in the
-                farfield expansion to use at each obstacle
             obstacle_config_file (str): A path to the obstacle
                 configuration JSON file that contains information
                 about obstacle geometries and boundary conditions.
@@ -558,17 +557,20 @@ class MKFE_FD_ScatteringProblem:
 
         # Create a name for this scattering problem (for recalling
         # from storage)
-        self.problem_label = get_filename_base(
+        self.obstacle_config_label = get_filename_base(obstacle_config_file)
+        self.medium_config_label = get_filename_base(medium_config_file)
+        self.numerical_config_label = get_filename_base(numerical_config_file)
+
+        self.problem_label = get_full_configuration_filename_base(
             obstacle_config=obstacle_config_file,
             medium_config=medium_config_file,
-            numerical_config=numerical_config_file
+            numerical_config=numerical_config_file,
+            reference_config=reference_config_file
         )
         
         # Get reference solution
-        self.reference_obstacles = None 
-        if reference_solution is not None:
-            self.reference_obstacles = reference_solution.obstacles[max(reference_solution.PPWs)]
-
+        if reference_config_file is not None:
+            self._get_reference_solution(reference_config_file)
 
 
     def _add_obstacle_geometries_from_config(self, config_file:str) -> None:
@@ -636,6 +638,23 @@ class MKFE_FD_ScatteringProblem:
         self.tol = config['tol']
         self.maxiter = config['maxiter']
 
+    def _get_reference_solution(self, reference_config_file:str) -> None:
+        with open(reference_config_file, 'r') as in_json_file:
+            config = json.load(in_json_file)
+
+        # Parse reference solution numerical method info 
+        self.reference_config_label = get_filename_base(reference_config_file)
+        
+        self.reference_PPW = [int(PPW) for PPW in config['PPWs']][0]
+        self.reference_num_farfield_terms = int(config['num_farfield_terms'])
+        self.reference_tol = config['tol']
+        self.reference_maxiter = config['maxiter']
+
+        # Get the reference solution
+        logging.info(f"Loading Reference Solution (PPW={self.reference_PPW}, Num Farfield Terms={self.reference_num_farfield_terms}) . . .")
+        self.reference_solution, _ = self.solve_PPW(self.reference_PPW, Algorithm.GAUSS_SEIDEL, reference=True)
+        logging.info("Done loading reference solution.")
+
     def _setup_scattering_obstacles_for_PPW(
         self,
         PPW: int
@@ -676,6 +695,64 @@ class MKFE_FD_ScatteringProblem:
             
         # TODO: Handle parametric obstacles
 
+    def _cache_PPW_solution(
+        self,
+        PPW: int,
+        solution: list[MKFE_FDObstacle]
+    ) -> None:
+        """Cache a given solution at a given PPW resolution.
+        
+        Caches are stored in the filepath
+        results/obstacles/{obstacle_config}/{medium_config}_{numerical_config}/PPW_{PPW}.pickle
+        """
+        # Create cache directory for this setup if it hasn't already been created
+        cache_folder = os.path.join(
+            "results",
+            "obstacles",
+            self.obstacle_config_label,
+            self.medium_config_label,
+            self.numerical_config_label,
+        )
+        os.makedirs(cache_folder, exist_ok=True)
+
+        # Now, cache this obstacle setup if it doesn't exist 
+        cache_file = os.path.join(cache_folder, f"PPW_{PPW}.pickle")
+        if not os.path.exists(cache_file):
+            with open(cache_file, 'wb') as outfile:
+                cloudpickle.dump(solution, outfile)
+
+    def _check_cached_PPW_solution(
+        self, 
+        PPW: int,
+        reference: bool = False
+    ) -> Optional[list[MKFE_FDObstacle]]:
+        """Checks for cached solution of this obstacle configuration
+        at a given PPW for a given numerical solution set of parameters
+        (useful for distinguishing between reference and trial solutions)"""
+        if reference:
+            cache_file = os.path.join(
+                "results",
+                "obstacles",
+                self.obstacle_config_label,
+                self.medium_config_label,
+                self.reference_config_label,
+                f"PPW_{PPW}.pickle"
+            )
+        else:
+            cache_file = os.path.join(
+                "results",
+                "obstacles",
+                self.obstacle_config_label,
+                self.medium_config_label,
+                self.numerical_config_label,
+                f"PPW_{PPW}.pickle"
+            )
+        if os.path.exists(cache_file):
+            with open(cache_file, 'rb') as infile:
+                return cloudpickle.load(infile)
+        else:
+            return None 
+
     def _solve_PPW_Gauss_Seidel(
         self,
         PPW: int,
@@ -686,9 +763,21 @@ class MKFE_FD_ScatteringProblem:
         Assumes that self.obstacles is populated with a fresh set 
         of obstacles with unknowns all set to zeros.
         """
+        tracemalloc.start()
         logging.info(f"Setting up Sparse LU solvers for PPW = {PPW}, tol = {self.tol:.4e}, and maxiter = {self.maxiter}")
         lu_solvers = [FD_SparseLUSolver(obstacle.fd_matrix) for obstacle in self.obstacles[PPW]]
+        
+        # Take a snapshot of memory usage
+        snapshot = tracemalloc.take_snapshot()
 
+        # Sort by memory usage size
+        top_stats = snapshot.statistics('lineno')
+
+        # Log the top memory-consuming lines
+        logging.info("[ Top 10 memory-consuming things ]")
+        for stat in top_stats[:10]:
+            logging.info(stat)
+        
         try:
             logging.info(f"Using Gauss-Seidel iteration with PPW = {PPW}, tol = {self.tol:.4e}, and maxiter = {self.maxiter}")
             prev_unknowns = np.hstack([obstacle.fd_unknowns for obstacle in self.obstacles[PPW]])   # Will be all zeros to start out with 
@@ -703,6 +792,16 @@ class MKFE_FD_ScatteringProblem:
                     logging.debug(f"Solving Single-Scattering Problem at Obstacle ID {obstacle.id}")
                     other_obstacles = self.obstacles[PPW][:i] + self.obstacles[PPW][i+1:]
                     obstacle.solve(solver, other_obstacles, self.incident_wave)
+                    # Take a snapshot of memory usage
+                    snapshot = tracemalloc.take_snapshot()
+
+                    # Sort by memory usage size
+                    top_stats = snapshot.statistics('lineno')
+
+                    # Log the top memory-consuming lines
+                    logging.info("[ Top 10 memory-consuming things ]")
+                    for stat in top_stats[:10]:
+                        logging.info(stat)
                     
                     # Store the updated values of these unknowns for comparison
                     cur_unknowns = np.hstack((cur_unknowns, obstacle.fd_unknowns))
@@ -714,7 +813,8 @@ class MKFE_FD_ScatteringProblem:
                 logging.info(f"Max Error at iteration {itr}: {max_err:.5e}")
                 if max_err < self.tol:
                     logging.info(f"Gauss-Seidel Iteration Converged for PPW = {PPW} after {itr} iterations with max-norm error {max_err:.5e}")
-                    return self.obstacles[PPW], itr
+                    self._cache_PPW_solution(PPW, self.obstacles[PPW])
+                    return self.obstacles[PPW], itr     # Only cache if converged
                 
                 # Check that we didn't have something really bad happen
                 if (not np.isfinite(max_err)) or (max_err > 1e8):
@@ -731,13 +831,15 @@ class MKFE_FD_ScatteringProblem:
             )
         finally:
             # Delete RAM-intensive solvers
+            tracemalloc.stop()
             del lu_solvers
             gc.collect()    
-    
+
     def solve_PPW(
         self,
         PPW: int,
-        algorithm: Algorithm
+        algorithm: Algorithm,
+        reference: bool = False
     ) -> tuple[list[MKFE_FDObstacle], int]:
         """Solve the multiple-elastic-scattering problem for grids
         with a resolution corresponding to a given number of 
@@ -766,13 +868,30 @@ class MKFE_FD_ScatteringProblem:
         """
         logging.debug(f"Entering solve_PPW() with PPW = {PPW}")
 
+        ## Check for cached versions of these obstacles
+        if reference:
+            cached_solution = self._check_cached_PPW_solution(PPW, reference=True) 
+        else:
+            cached_solution = self._check_cached_PPW_solution(PPW, reference=True)
+        
+        if cached_solution is not None:
+            if not reference:
+                self.obstacles[PPW] = cached_solution
+            return cached_solution, -1  # -1 denotes we got it from cache
+
+        ## Otherwise, run an iterative algorithm to solve the multiple
+        ## scattering problem at this resolution
+        
         # Create obstacle objects and initialize finite-difference
         # matrices for use during iteration
         self._setup_scattering_obstacles_for_PPW(PPW)
 
         # Iterate using the desired algorithm
         if algorithm is Algorithm.GAUSS_SEIDEL:
-            return self._solve_PPW_Gauss_Seidel(PPW)
+            solution = self._solve_PPW_Gauss_Seidel(PPW)
+            if reference:
+                self.obstacles.pop(PPW)
+            return solution
         else:
             raise ValueError(
                 "Only supported iterative algorithm is Algorithm.GAUSS_SEIDEL at the moment"
@@ -803,11 +922,11 @@ class MKFE_FD_ScatteringProblem:
         # If desired, pickle this object for further analysis
         if pickle:
             if reference:
-                outfile_name = os.path.join("results", "solved_objects", "reference", f"{self.problem_label}.pickle")
+                outfile_name = os.path.join("results", "solved_objects", "convergence_experiments", "reference", f"{self.problem_label}.pickle")
                 with open(outfile_name, 'wb') as outfile:
                     cloudpickle.dump(self, outfile)
             else:
-                outfile_name = os.path.join("results", "solved_objects", "numerical", f"{self.problem_label}.pickle")
+                outfile_name = os.path.join("results", "solved_objects", "convergence_experiments", "numerical", f"{self.problem_label}.pickle")
                 with open(outfile_name, 'wb') as outfile:
                     cloudpickle.dump(self, outfile)
             
@@ -819,10 +938,10 @@ class MKFE_FD_ScatteringProblem:
         Otherwise, uses a standard convergence analysis, treating the reference
         solution as the exact solution on the provided grid.
         """
-        if self.reference_obstacles is not None:
+        if self.reference_solution is not None:
             self.convergence_analyzer.analyze_convergence_reference(
                 solved_obstacles=self.obstacles,
-                reference_solution=self.reference_obstacles
+                reference_solution=self.reference_solution
             )
         else:
             # Analyze by point-by-point Richardson extrapolation
@@ -919,6 +1038,33 @@ class MKFE_FD_ScatteringProblem:
             plot_img_path = os.path.join(plot_folder, "total_displacement_vector_field.png")
             plt.savefig(plot_img_path)
             plt.clf()
+
+
+    def __getstate__(self):
+        """Used when preparing to save a pickled version of this object."""
+        # Prepare all class attributes 
+        state = self.__dict__.copy()
+        state.pop('obstacles')      # Don't save the full obstacles list here. Recreate them from serialization
+
+        return state
+    
+    def __setstate__(self, state):
+        """Restore the object from a serialized state"""
+    
+        # Recreate serializable attributes
+        self.__dict__.update(state)
+        self.obstacles = dict()
+        missing_PPWs = []
+        for PPW in self.PPWs:
+            cached_PPW_solution = self._check_cached_PPW_solution(PPW)
+            if cached_PPW_solution is None:
+                missing_PPWs.append(PPW)
+            else:
+                self.obstacles[PPW] = cached_PPW_solution
+        if len(missing_PPWs) > 0:
+            raise RuntimeError(f"Error: Missing cache files for PPWs: {missing_PPWs}.")
+
+
                 
 
         

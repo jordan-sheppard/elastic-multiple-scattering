@@ -1253,7 +1253,7 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
     def __getstate__(self):
         """Used when preparing to save a pickled version of this object."""
         # Prepare all class attributes 
-        state = self.__dict__.copy()\
+        state = self.__dict__.copy()
 
         return state
     
