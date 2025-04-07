@@ -710,6 +710,7 @@ class MKFE_FD_ScatteringProblem:
         if reference:
             cache_folder = os.path.join(
                 "results",
+                "solved_objects",
                 "obstacles",
                 self.obstacle_config_label,
                 self.medium_config_label,
@@ -718,6 +719,7 @@ class MKFE_FD_ScatteringProblem:
         else:
             cache_folder = os.path.join(
                 "results",
+                "solved_objects",
                 "obstacles",
                 self.obstacle_config_label,
                 self.medium_config_label,
@@ -742,6 +744,7 @@ class MKFE_FD_ScatteringProblem:
         if reference:
             cache_file = os.path.join(
                 "results",
+                "solved_objects",
                 "obstacles",
                 self.obstacle_config_label,
                 self.medium_config_label,
@@ -751,6 +754,7 @@ class MKFE_FD_ScatteringProblem:
         else:
             cache_file = os.path.join(
                 "results",
+                "solved_objects",
                 "obstacles",
                 self.obstacle_config_label,
                 self.medium_config_label,
