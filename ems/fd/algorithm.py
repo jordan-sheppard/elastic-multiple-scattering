@@ -9,6 +9,7 @@ from tabulate import tabulate
 import sys  
 import os 
 import re
+import gc 
 
 from ..base.medium import LinearElasticMedium
 from ..base.waves import IncidentPlanePWave
@@ -23,6 +24,7 @@ from .obstacles import (
     MKFE_FDObstacle, Circular_MKFE_FDObstacle,
     CircularObstacleGeometry
 )
+from .solvers import FD_SparseLUSolver
 
 class ErrorConvergenceRatesPolar:
     """A class for analyzing convergence rates on 
@@ -196,10 +198,7 @@ class ErrorConvergenceRatesPolar:
 
         # If possible, approximate error order for latest two datapoints 
         self._approximate_error_orders()
-
-    
-
-
+  
 
 class ScatteringConvergenceAnalyzerPolar:
     """A class for analyzing convergence on a problem with no 
@@ -239,10 +238,9 @@ class ScatteringConvergenceAnalyzerPolar:
             self.psi_rates[i] = ErrorConvergenceRatesPolar()
 
         solved_obstacles_coarse_to_fine = sorted(solved_obstacles.items())
-        for i in range(len(solved_obstacles_coarse_to_fine) - 1):
+        for i in range(len(solved_obstacles_coarse_to_fine)):
             # Get coarse/fine obstacles at this resolution lavel
             coarse_obstacles = solved_obstacles_coarse_to_fine[i][1]
-            reference_solution
 
             # Sort obstacles by id 
             def sort_by_id(obstacle: Circular_MKFE_FDObstacle):
@@ -479,8 +477,6 @@ class ScatteringConvergenceAnalyzerPolar:
                 folder=plots_folderpath
             )
 
-        
-
 
 class MKFE_FD_ScatteringProblem:
     """A class for setting up a multiple-scattering problem using 
@@ -690,46 +686,53 @@ class MKFE_FD_ScatteringProblem:
         Assumes that self.obstacles is populated with a fresh set 
         of obstacles with unknowns all set to zeros.
         """
-        logging.debug(f"Using Gauss-Seidel iteration with PPW = {PPW}, tol = {self.tol:.4e}, and maxiter = {self.maxiter}")
+        logging.info(f"Setting up Sparse LU solvers for PPW = {PPW}, tol = {self.tol:.4e}, and maxiter = {self.maxiter}")
+        lu_solvers = [FD_SparseLUSolver(obstacle.fd_matrix) for obstacle in self.obstacles[PPW]]
 
-        prev_unknowns = np.hstack([obstacle.fd_unknowns for obstacle in self.obstacles[PPW]])   # Will be all zeros to start out with 
-        for itr in range(self.maxiter):
-            logging.debug(f"Beginning iteration {itr}")
-            cur_unknowns = np.array([])
-            
-            # Solve single scattering problems (using most currently
-            # updated set of unknowns/farfield coefficients at each obstacle
-            # during iteration when filling in forcing vectors)
-            for i, obstacle in enumerate(self.obstacles[PPW]):
-                logging.debug(f"Solving Single-Scattering Problem at Obstacle ID {obstacle.id}")
-                other_obstacles = self.obstacles[PPW][:i] + self.obstacles[PPW][i+1:]
-                obstacle.solve(other_obstacles, self.incident_wave)
+        try:
+            logging.info(f"Using Gauss-Seidel iteration with PPW = {PPW}, tol = {self.tol:.4e}, and maxiter = {self.maxiter}")
+            prev_unknowns = np.hstack([obstacle.fd_unknowns for obstacle in self.obstacles[PPW]])   # Will be all zeros to start out with 
+            for itr in range(self.maxiter):
+                logging.debug(f"Beginning iteration {itr}")
+                cur_unknowns = np.array([])
                 
-                # Store the updated values of these unknowns for comparison
-                cur_unknowns = np.hstack((cur_unknowns, obstacle.fd_unknowns))
+                # Solve single scattering problems (using most currently
+                # updated set of unknowns/farfield coefficients at each obstacle
+                # during iteration when filling in forcing vectors)
+                for i, (obstacle, solver) in enumerate(zip(self.obstacles[PPW], lu_solvers)):
+                    logging.debug(f"Solving Single-Scattering Problem at Obstacle ID {obstacle.id}")
+                    other_obstacles = self.obstacles[PPW][:i] + self.obstacles[PPW][i+1:]
+                    obstacle.solve(solver, other_obstacles, self.incident_wave)
+                    
+                    # Store the updated values of these unknowns for comparison
+                    cur_unknowns = np.hstack((cur_unknowns, obstacle.fd_unknowns))
+                
+                # Check for convergence (in max norm)
+                max_err = np.max(np.abs(cur_unknowns - prev_unknowns))
+                prev_unknowns = cur_unknowns
+                
+                logging.info(f"Max Error at iteration {itr}: {max_err:.5e}")
+                if max_err < self.tol:
+                    logging.info(f"Gauss-Seidel Iteration Converged for PPW = {PPW} after {itr} iterations with max-norm error {max_err:.5e}")
+                    return self.obstacles[PPW], itr
+                
+                # Check that we didn't have something really bad happen
+                if (not np.isfinite(max_err)) or (max_err > 1e8):
+                    logging.exception(f"ERROR: Gauss-Seidel Iteration Diverged for PPW = {PPW} after {itr} iterations.")
+                    raise AlgorithmDivergedException(f"Gauss-Seidel Iteration Diverged for PPW = {PPW} after {itr} iterations.")
+                
             
-            # Check for convergence (in max norm)
-            max_err = np.max(np.abs(cur_unknowns - prev_unknowns))
-            prev_unknowns = cur_unknowns
-            
-            logging.info(f"Max Error at iteration {itr}: {max_err:.5e}")
-            if max_err < self.tol:
-                logging.info(f"Gauss-Seidel Iteration Converged for PPW = {PPW} after {itr} iterations with max-norm error {max_err:.5e}")
-                return self.obstacles[PPW], itr
-            
-            # Check that we didn't have something really bad happen
-            if (not np.isfinite(max_err)) or (max_err > 1e8):
-                logging.exception(f"ERROR: Gauss-Seidel Iteration Diverged for PPW = {PPW} after {itr} iterations.")
-                raise AlgorithmDivergedException(f"Gauss-Seidel Iteration Diverged for PPW = {PPW} after {itr} iterations.")
-            
-        
-        # Getting here means that the algorithm did not converge.
-        logging.exception(
-            f"solve_PPW() with PPW={PPW} did not converge in {self.maxiter} iterations."
-        )
-        raise MaxIterationsExceedException(
-            f"solve_PPW() with PPW={PPW} did not converge in {self.maxiter} iterations."
-        )
+            # Getting here means that the algorithm did not converge.
+            logging.exception(
+                f"solve_PPW() with PPW={PPW} did not converge in {self.maxiter} iterations."
+            )
+            raise MaxIterationsExceedException(
+                f"solve_PPW() with PPW={PPW} did not converge in {self.maxiter} iterations."
+            )
+        finally:
+            # Delete RAM-intensive solvers
+            del lu_solvers
+            gc.collect()    
     
     def solve_PPW(
         self,
