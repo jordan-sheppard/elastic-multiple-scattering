@@ -27,7 +27,7 @@ def get_full_configuration_filename_base(
     numerical_label = get_filename_base(numerical_config)
     reference_label = get_filename_base(reference_config) if reference_config is not None else None 
 
-    if reference_label is None:
+    if reference_label is not None:
         return f"scattering_{obstacle_label}_{medium_label}_{numerical_label}_REFERENCE_{reference_label}"
     else:
         return f"scattering_{obstacle_label}_{medium_label}_{numerical_label}_NOREFERENCE"

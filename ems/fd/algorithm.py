@@ -698,7 +698,8 @@ class MKFE_FD_ScatteringProblem:
     def _cache_PPW_solution(
         self,
         PPW: int,
-        solution: list[MKFE_FDObstacle]
+        solution: list[MKFE_FDObstacle], 
+        reference: bool = False
     ) -> None:
         """Cache a given solution at a given PPW resolution.
         
@@ -706,13 +707,22 @@ class MKFE_FD_ScatteringProblem:
         results/obstacles/{obstacle_config}/{medium_config}_{numerical_config}/PPW_{PPW}.pickle
         """
         # Create cache directory for this setup if it hasn't already been created
-        cache_folder = os.path.join(
-            "results",
-            "obstacles",
-            self.obstacle_config_label,
-            self.medium_config_label,
-            self.numerical_config_label,
-        )
+        if reference:
+            cache_folder = os.path.join(
+                "results",
+                "obstacles",
+                self.obstacle_config_label,
+                self.medium_config_label,
+                self.reference_config_label,
+            )
+        else:
+            cache_folder = os.path.join(
+                "results",
+                "obstacles",
+                self.obstacle_config_label,
+                self.medium_config_label,
+                self.numerical_config_label,
+            )
         os.makedirs(cache_folder, exist_ok=True)
 
         # Now, cache this obstacle setup if it doesn't exist 
@@ -756,6 +766,7 @@ class MKFE_FD_ScatteringProblem:
     def _solve_PPW_Gauss_Seidel(
         self,
         PPW: int,
+        reference: bool = False
     ) -> tuple[list[MKFE_FDObstacle], int]:
         """Solve the multiple scattering problem at a given PPW using
         Gauss Seidel algorithm.
@@ -763,20 +774,9 @@ class MKFE_FD_ScatteringProblem:
         Assumes that self.obstacles is populated with a fresh set 
         of obstacles with unknowns all set to zeros.
         """
-        tracemalloc.start()
         logging.info(f"Setting up Sparse LU solvers for PPW = {PPW}, tol = {self.tol:.4e}, and maxiter = {self.maxiter}")
         lu_solvers = [FD_SparseLUSolver(obstacle.fd_matrix) for obstacle in self.obstacles[PPW]]
-        
-        # Take a snapshot of memory usage
-        snapshot = tracemalloc.take_snapshot()
 
-        # Sort by memory usage size
-        top_stats = snapshot.statistics('lineno')
-
-        # Log the top memory-consuming lines
-        logging.info("[ Top 10 memory-consuming things ]")
-        for stat in top_stats[:10]:
-            logging.info(stat)
         
         try:
             logging.info(f"Using Gauss-Seidel iteration with PPW = {PPW}, tol = {self.tol:.4e}, and maxiter = {self.maxiter}")
@@ -792,16 +792,6 @@ class MKFE_FD_ScatteringProblem:
                     logging.debug(f"Solving Single-Scattering Problem at Obstacle ID {obstacle.id}")
                     other_obstacles = self.obstacles[PPW][:i] + self.obstacles[PPW][i+1:]
                     obstacle.solve(solver, other_obstacles, self.incident_wave)
-                    # Take a snapshot of memory usage
-                    snapshot = tracemalloc.take_snapshot()
-
-                    # Sort by memory usage size
-                    top_stats = snapshot.statistics('lineno')
-
-                    # Log the top memory-consuming lines
-                    logging.info("[ Top 10 memory-consuming things ]")
-                    for stat in top_stats[:10]:
-                        logging.info(stat)
                     
                     # Store the updated values of these unknowns for comparison
                     cur_unknowns = np.hstack((cur_unknowns, obstacle.fd_unknowns))
@@ -813,7 +803,7 @@ class MKFE_FD_ScatteringProblem:
                 logging.info(f"Max Error at iteration {itr}: {max_err:.5e}")
                 if max_err < self.tol:
                     logging.info(f"Gauss-Seidel Iteration Converged for PPW = {PPW} after {itr} iterations with max-norm error {max_err:.5e}")
-                    self._cache_PPW_solution(PPW, self.obstacles[PPW])
+                    self._cache_PPW_solution(PPW, self.obstacles[PPW], reference)
                     return self.obstacles[PPW], itr     # Only cache if converged
                 
                 # Check that we didn't have something really bad happen
@@ -831,7 +821,6 @@ class MKFE_FD_ScatteringProblem:
             )
         finally:
             # Delete RAM-intensive solvers
-            tracemalloc.stop()
             del lu_solvers
             gc.collect()    
 
@@ -872,7 +861,7 @@ class MKFE_FD_ScatteringProblem:
         if reference:
             cached_solution = self._check_cached_PPW_solution(PPW, reference=True) 
         else:
-            cached_solution = self._check_cached_PPW_solution(PPW, reference=True)
+            cached_solution = self._check_cached_PPW_solution(PPW, reference=False)
         
         if cached_solution is not None:
             if not reference:
@@ -888,7 +877,7 @@ class MKFE_FD_ScatteringProblem:
 
         # Iterate using the desired algorithm
         if algorithm is Algorithm.GAUSS_SEIDEL:
-            solution = self._solve_PPW_Gauss_Seidel(PPW)
+            solution = self._solve_PPW_Gauss_Seidel(PPW, reference)
             if reference:
                 self.obstacles.pop(PPW)
             return solution
