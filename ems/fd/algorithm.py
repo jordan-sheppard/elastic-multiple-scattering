@@ -1,3 +1,4 @@
+from typing import Optional, Self
 import numpy as np 
 import json
 import logging
@@ -5,7 +6,12 @@ import cloudpickle
 from matplotlib import pyplot as plt
 from scipy.interpolate import RegularGridInterpolator
 from tabulate import tabulate
+import sys  
 import os 
+import re
+import tracemalloc
+import gc 
+from memory_profiler import profile
 
 from ..base.medium import LinearElasticMedium
 from ..base.waves import IncidentPlanePWave
@@ -14,11 +20,14 @@ from ..base.exceptions import (
 )
 from ..base.consts import Algorithm, ErrorType
 from ..base.obstacles import BaseObstacle
+from ..base.text_parsing import get_full_configuration_filename_base, get_filename_base
 from .grids import FDPolarGrid_ArtBndry, FDLocalPolarGrid
 from .obstacles import (
     MKFE_FDObstacle, Circular_MKFE_FDObstacle,
     CircularObstacleGeometry
 )
+from .solvers import FD_SparseLUSolver
+
 
 class ErrorConvergenceRatesPolar:
     """A class for analyzing convergence rates on 
@@ -33,34 +42,37 @@ class ErrorConvergenceRatesPolar:
         self.Linfty_errs = []
         self.Linfty_rates = [np.nan]        # Padding NaN since we really need 2 gridpoints to analyze convergence
     
-    def _interpolate_fine_to_coarse(
+    def _interpolate_grid_vals(
         self,
-        coarse_grid: FDLocalPolarGrid,
-        fine_grid: FDLocalPolarGrid,
-        fine_vals: np.ndarray,
+        source_grid: FDLocalPolarGrid,
+        source_vals: np.ndarray,
+        dest_grid: FDLocalPolarGrid,
     ) -> np.ndarray:
-        """Interpolates the fine grid values onto the coarse grid.
+        """Interpolates source grid values onto a destination grid.
         
-        fine_vals should have the same 2D shape as the fine local grid.
+        source_vals should have the same 2D shape as source_grid.
 
-        Assumes that theta bounds are [0, 2*pi] and r bounds are [r_min, r_max]
-        on both grids.
-        
+        Assumes that the grids have the same bounds on both axes.
         """
-        # Set up interpolation over fine grid.
-        r_gridpoints_fine, theta_gridpoints_fine  = fine_grid.r_vals, fine_grid.theta_vals
-        fine_grid_interpolation_func = RegularGridInterpolator(
-            (theta_gridpoints_fine, r_gridpoints_fine), 
-            fine_vals,
+        # Set up interpolation over source grid.
+        r_gridpoints_source, theta_gridpoints_source  = source_grid.r_vals, source_grid.theta_vals
+        theta_gridpoints_source_extended = np.array(list(theta_gridpoints_source) + [2 * np.pi])     # Allows 2pi (idenfitied with 0, the first gridpoint) to actually be an upper bound
+        source_vals_extended = np.vstack((source_vals, source_vals[0]))     # Rolls over theta=0 gridpoints to be theta=2pi gridpoints
+        
+        source_grid_interpolation_func = RegularGridInterpolator(
+            (theta_gridpoints_source_extended, r_gridpoints_source), 
+            source_vals_extended,
             method='cubic'
         )
         
-        # Get interpolation on coarse grid
-        r_coarse_1d = np.ravel(coarse_grid.r_local)
-        theta_coarse_1d = np.ravel(coarse_grid.theta_local)
-        gridpoints_of_interest = np.column_stack((theta_coarse_1d, r_coarse_1d))
-        interpolated_values_1d = fine_grid_interpolation_func(gridpoints_of_interest)
-        return np.reshape(interpolated_values_1d, shape=coarse_grid.shape)
+        # Get interpolation on destination grid
+        r_dest_1d = np.ravel(dest_grid.r_local)
+        theta_dest_1d = np.ravel(dest_grid.theta_local)
+        gridpoints_of_interest = np.column_stack((theta_dest_1d, r_dest_1d))
+        interpolated_values_1d = source_grid_interpolation_func(gridpoints_of_interest)
+        
+        # Reshape to be same shape as fine grid
+        return np.reshape(interpolated_values_1d, shape=dest_grid.shape)
 
 
     def _approximate_error_orders(self):
@@ -68,7 +80,7 @@ class ErrorConvergenceRatesPolar:
         extrapolation on the two most current error data points
         in the error arrays/grid parameter array."""
         if len(self.h) < 2:
-            return  # Can't approximate error with less than 2 data points
+            return      # Can't approximate error with less than 2 data points
         
         grid_param_ratio = np.log(self.h[-2] / self.h[-1])
         
@@ -81,42 +93,46 @@ class ErrorConvergenceRatesPolar:
         self.Linfty_rates.append(Linfty_order)
 
 
-    def add_new_iteration(
+    def add_new_iteration_richardson_extrapolation(
         self,
         coarse_grid: FDLocalPolarGrid,
         fine_grid: FDLocalPolarGrid,
         coarse_vals: np.ndarray,
         fine_vals: np.ndarray
     ):
-        """Gets information from new iteration.
+        """Gets convergence information from new iteration using a Richardson
+        extrapolation scheme.
         
-        Compares coarse grid values to fine grid values, all on coarse gridpoints only.
-        (using cubic interpolation of fine solution onto coarse grid for comparison).
+        Compares coarse grid values to fine grid values by interpolating coarse values
+        on fine gridpoints.
+        Uses cubic interpolation of coarse solution onto fine grid.
         """
-        # Get fine values on coarse grid
-        fine_vals = self._interpolate_fine_to_coarse(coarse_grid, fine_grid, fine_vals)
+        # Get coarse values on fine grid
+        coarse_vals_interpolated = self._interpolate_grid_vals(coarse_grid, coarse_vals, fine_grid)
 
-        # Get coarse local polar grid radii (for L2 convergence)
-        r_coarse = coarse_grid.r_local
+        # Get fine local polar grid radii (for L2 convergence)
+        r_fine = fine_grid.r_local
+        dr_fine = fine_grid.dr 
+        dtheta_fine = fine_grid.dtheta
 
         # Compute AMPLITUDE ERROR quantities:
         # 1) Absolute value of difference between coarse and fine solutions
         # 2) Absolute value of fine solution (for relative-L2 norm analysis)
         amplitude_fine = np.abs(fine_vals)
-        amplitude_diff = np.abs(np.abs(coarse_vals) - amplitude_fine)
+        amplitude_diff = np.abs(np.abs(coarse_vals_interpolated) - amplitude_fine)
         
         # Approximate L2 norm, Relative L2 norm, and L-infinity norm errors
         # of the differences in amplitude for coarse-to-fine comparison
         L2_err = np.sqrt(
             np.sum(
-                amplitude_diff**2 * r_coarse * coarse_grid.dr * coarse_grid.dtheta
+                amplitude_diff**2 * r_fine * dr_fine * dtheta_fine
             )
         )
         self.L2_errs.append(L2_err)
 
         L2_norm_fine = np.sqrt(
             np.sum(
-                amplitude_fine**2 * r_coarse * coarse_grid.dr * coarse_grid.dtheta
+                amplitude_fine**2 * r_fine * dr_fine * dtheta_fine
             )
         )
         L2_relative_err = L2_err / L2_norm_fine
@@ -132,7 +148,60 @@ class ErrorConvergenceRatesPolar:
         # If possible, approximate error order for latest two datapoints 
         self._approximate_error_orders()
 
+    def add_new_iteration_reference(
+        self,
+        coarse_grid: FDLocalPolarGrid,
+        reference_grid: FDLocalPolarGrid,
+        coarse_vals: np.ndarray,
+        reference_vals: np.ndarray
+    ):
+        """Gets convergence/error information from new iteration by
+        comparing to a reference solution.
+        
+        Compares coarse grid values to reference grid values,
+        all on coarse gridpoints only, by interpolating the reference solution onto 
+        the coarse gridpoints
+        (using cubic interpolation of fine solution onto coarse grid for comparison).
+        """
+        # Get fine values on coarse grid
+        reference_vals = self._interpolate_grid_vals(reference_grid, reference_vals, coarse_grid)
 
+        # Get coarse local polar grid radii (for L2 convergence)
+        r_coarse = coarse_grid.r_local
+
+        # Compute AMPLITUDE ERROR quantities:
+        # 1) Absolute value of difference between coarse and fine solutions
+        # 2) Absolute value of fine solution (for relative-L2 norm analysis)
+        amplitude_reference = np.abs(reference_vals)
+        amplitude_diff = np.abs(np.abs(coarse_vals) - amplitude_reference)
+        
+        # Approximate L2 norm, Relative L2 norm, and L-infinity norm errors
+        # of the differences in amplitude for coarse-to-fine comparison
+        L2_err = np.sqrt(
+            np.sum(
+                amplitude_diff**2 * r_coarse * coarse_grid.dr * coarse_grid.dtheta
+            )
+        )
+        self.L2_errs.append(L2_err)
+
+        L2_norm_reference = np.sqrt(
+            np.sum(
+                amplitude_reference**2 * r_coarse * coarse_grid.dr * coarse_grid.dtheta
+            )
+        )
+        L2_relative_err = L2_err / L2_norm_reference
+        self.L2_relative_errs.append(L2_relative_err)
+
+        Linfty_err = np.max(amplitude_diff)
+        self.Linfty_errs.append(Linfty_err)
+
+        # Store grid parameter and resolution (coarse grid's dtheta used) 
+        self.h.append(coarse_grid.dtheta) 
+        self.grid_resolutions.append((coarse_grid.num_radial_gridpoints, coarse_grid.num_angular_gridpoints))
+
+        # If possible, approximate error order for latest two datapoints 
+        self._approximate_error_orders()
+  
 
 class ScatteringConvergenceAnalyzerPolar:
     """A class for analyzing convergence on a problem with no 
@@ -150,12 +219,74 @@ class ScatteringConvergenceAnalyzerPolar:
             for i in range(num_obstacles)
         }
 
-    def analyze_convergence(
+    def analyze_convergence_reference(
+        self,
+        solved_obstacles: dict[int, list[Circular_MKFE_FDObstacle]],
+        reference_solution: list[Circular_MKFE_FDObstacle]
+    ):
+        """Analyzes convergence at various PPW resolutions for
+        a given obstacle setup by comparing to a refined reference
+        grid solution.
+        
+        Args:
+            solved_obstacles: A dictionary whose keys are PPWs resolutions,
+                and whose values are a list of solved obstacles at
+                that resolution value (should be same obstacles with
+                same IDs, but more refined grids as PPW increases)
+        """
+        # Reset PPW and phi/psi convergence rates lists
+        self.PPWs = sorted(list(solved_obstacles.keys()))
+        for i in self.phi_rates.keys():
+            self.phi_rates[i] = ErrorConvergenceRatesPolar()
+            self.psi_rates[i] = ErrorConvergenceRatesPolar()
+
+        solved_obstacles_coarse_to_fine = sorted(solved_obstacles.items())
+        for i in range(len(solved_obstacles_coarse_to_fine)):
+            # Get coarse/fine obstacles at this resolution lavel
+            coarse_obstacles = solved_obstacles_coarse_to_fine[i][1]
+
+            # Sort obstacles by id 
+            def sort_by_id(obstacle: Circular_MKFE_FDObstacle):
+                return obstacle.id
+            coarse_obstacles.sort(key=sort_by_id)
+            reference_solution.sort(key=sort_by_id)
+
+            for i, (coarse_obs, reference_obs) in enumerate(zip(coarse_obstacles, reference_solution)):
+                # Validate we're talking about the same obstacle 
+                if coarse_obs.id != reference_obs.id:
+                    raise RuntimeError("ERROR: Sorted obstacle IDs don't match up!")
+                obs_id = coarse_obs.id 
+                
+                # Get scattered phi/psi values on each obstacle grid
+                other_coarse_obstacles = coarse_obstacles[:i] + coarse_obstacles[i+1:]
+                other_fine_obstacles = reference_solution[:i] + reference_solution[i+1:]
+
+                scattered_phi_coarse = coarse_obs.get_total_phi(other_obstacles=other_coarse_obstacles)
+                scattered_psi_coarse = coarse_obs.get_total_psi(other_obstacles=other_coarse_obstacles)
+                scattered_phi_reference = reference_obs.get_total_phi(other_obstacles=other_fine_obstacles)
+                scattered_psi_reference = reference_obs.get_total_psi(other_obstacles=other_fine_obstacles)
+
+                # Analyze convergence at this step 
+                self.phi_rates[obs_id].add_new_iteration_reference(
+                    coarse_grid=coarse_obs.grid,
+                    reference_grid=reference_obs.grid,
+                    coarse_vals=scattered_phi_coarse,
+                    reference_vals=scattered_phi_reference
+                )
+                self.psi_rates[obs_id].add_new_iteration_reference(
+                    coarse_grid=coarse_obs.grid,
+                    reference_grid=reference_obs.grid,
+                    coarse_vals=scattered_psi_coarse,
+                    reference_vals=scattered_psi_reference
+                )
+
+    def analyze_convergence_richardson_extrapolation(
         self,
         solved_obstacles: dict[int, list[Circular_MKFE_FDObstacle]]
     ):
         """Analyzes convergence at various PPW resolutions for
-        a given obstacle setup.
+        a given obstacle setup using a point-by-point coarse-to-fine
+        comparison.
         
         Args:
             solved_obstacles: A dictionary whose keys are PPWs resolutions,
@@ -197,13 +328,13 @@ class ScatteringConvergenceAnalyzerPolar:
                 scattered_psi_fine = fine_obs.get_total_psi(other_obstacles=other_fine_obstacles)
 
                 # Analyze convergence at this step 
-                self.phi_rates[obs_id].add_new_iteration(
+                self.phi_rates[obs_id].add_new_iteration_richardson_extrapolation(
                     coarse_grid=coarse_obs.grid,
                     fine_grid=fine_obs.grid,
                     coarse_vals=scattered_phi_coarse,
                     fine_vals=scattered_phi_fine
                 )
-                self.psi_rates[obs_id].add_new_iteration(
+                self.psi_rates[obs_id].add_new_iteration_richardson_extrapolation(
                     coarse_grid=coarse_obs.grid,
                     fine_grid=fine_obs.grid,
                     coarse_vals=scattered_psi_coarse,
@@ -214,48 +345,65 @@ class ScatteringConvergenceAnalyzerPolar:
         self,
         convergence_rates: dict[int, ErrorConvergenceRatesPolar], 
         quantity: str,
-        fmt: str = 'fancy_grid'
+        fmt: str = 'fancy_grid',
+        file: Optional[str] = None,
+        append: bool = False
     ) -> None:
         """Displays a given convergence rate table for a given quantity"""
-        sorted_obstacle_ids = sorted(convergence_rates.keys())
-        obstacle_table_headers = ["PPW", "h", "Grid Resolution", "L2 Error", "L2 Observed Order", "Relative L2 Error",  "Relative L2 Observed Order", "L-Infinity Error", "L-Infinity Observed Order"]
-        
-        print("\n===========================================================")
-        print(f"             CONVERGENCE ANALYSIS: {quantity}             ")
-        print("===========================================================\n")
-        
-        for obs_id in sorted_obstacle_ids:
-            convergence_rate = convergence_rates[obs_id]
-            table = [
-                [PPW, h, f"{resolution[0]} x {resolution[1]}", L2, L2_order, L2rel, L2rel_order, Linfty, Linfty_order]
-                for PPW, h, resolution, L2, L2_order, L2rel, L2rel_order, Linfty, Linfty_order in zip(
-                    self.PPWs, convergence_rate.h, convergence_rate.grid_resolutions,
-                    convergence_rate.L2_errs, convergence_rate.L2_rates,
-                    convergence_rate.L2_relative_errs, convergence_rate.L2_relative_rates,
-                    convergence_rate.Linfty_errs, convergence_rate.Linfty_rates
+        mode = "a" if append else "w"       # Whether to write or append to file
+        output = open(file, mode) if file is not None else sys.stdout
+        with output as outfile:
+            sorted_obstacle_ids = sorted(convergence_rates.keys())
+            obstacle_table_headers = ["PPW", "h", "Grid Resolution", "L2 Error", "L2 Observed Order", "Relative L2 Error",  "Relative L2 Observed Order", "L-Infinity Error", "L-Infinity Observed Order"]
+            
+            print("\n===========================================================", file=output)
+            print(f"             CONVERGENCE ANALYSIS: {quantity}             ", file=output)
+            print("===========================================================\n", file=output)
+            
+            for obs_id in sorted_obstacle_ids:
+                convergence_rate = convergence_rates[obs_id]
+                table = [
+                    [PPW, h, f"{resolution[0]} x {resolution[1]}", L2, L2_order, L2rel, L2rel_order, Linfty, Linfty_order]
+                    for PPW, h, resolution, L2, L2_order, L2rel, L2rel_order, Linfty, Linfty_order in zip(
+                        self.PPWs, convergence_rate.h, convergence_rate.grid_resolutions,
+                        convergence_rate.L2_errs, convergence_rate.L2_rates,
+                        convergence_rate.L2_relative_errs, convergence_rate.L2_relative_rates,
+                        convergence_rate.Linfty_errs, convergence_rate.Linfty_rates
+                    )
+                ]
+                print(f"\n---------------- OBSTACLE {obs_id} ----------------\n", file=output)
+                print(
+                    tabulate(
+                        table,
+                        headers=obstacle_table_headers,
+                        tablefmt=fmt
+                    ), file=output
                 )
-            ]
-            print(f"\n---------------- OBSTACLE {obs_id} ----------------\n")
-            print(
-                tabulate(
-                    table,
-                    headers=obstacle_table_headers,
-                    tablefmt=fmt
-                )
-            )
 
     def _draw_convergence_plots(
         self,
         convergence_rates: dict[int, ErrorConvergenceRatesPolar], 
         quantity: str,
+        folder: Optional[str] = None
     ) -> None:
-        sorted_obstacle_ids = sorted(convergence_rates.keys())
+        # Define the plot function to save to a file if a folder is provided
+        # and to plot it to a screen otherwise 
+        def plotfig(figure_name: str) -> None:
+            if folder is not None:
+                figure_path = os.path.join(folder, f"{figure_name}.png")
+                plt.savefig(figure_path)
+                plt.clf()
+            else:
+                plt.plot()
+        
+        quantity_no_latex_formatting = re.sub(r'[$\\]', '', quantity)   # For figure saving filename purposes
 
         # Get errors for each obstacle
         h = []
         L2_errs = []
         L2_relative_errs = []
         Linfty_errs = []
+        sorted_obstacle_ids = sorted(convergence_rates.keys())
         for obs_id in sorted_obstacle_ids:
             h.append(convergence_rates[obs_id].h)
             L2_errs.append(convergence_rates[obs_id].L2_errs)
@@ -270,7 +418,7 @@ class ScatteringConvergenceAnalyzerPolar:
         plt.title(f"{quantity} - $L_2$ Errors")
         plt.xlabel("Grid Parameter $h$")
         plt.ylabel("Error")
-        plt.show()
+        plotfig(f'L2_errors_{quantity_no_latex_formatting}')
 
         # Plot Relative L2 errors
         for i, h_vals, obstacle_errs in zip(sorted_obstacle_ids, h, L2_relative_errs):
@@ -280,7 +428,7 @@ class ScatteringConvergenceAnalyzerPolar:
         plt.title(f"{quantity} - Relative $L_2$ Errors")
         plt.xlabel("Grid Parameter $h$")
         plt.ylabel("Error")
-        plt.show()
+        plotfig(f'Relative_L2_errors_{quantity_no_latex_formatting}')
 
         # Plot L-Infinity errors
         for i, h_vals, obstacle_errs in zip(sorted_obstacle_ids, h, Linfty_errs):
@@ -290,36 +438,47 @@ class ScatteringConvergenceAnalyzerPolar:
         plt.title(rf"{quantity} - $L_{{\infty}}$ Errors")
         plt.xlabel("Grid Parameter $h$")
         plt.ylabel("Error")
+        plotfig(f'L_Infinity_errors_{quantity_no_latex_formatting}')
         plt.show()
 
     
     def display_convergence(
         self,
-        table_fmt: str = 'fancy_grid'
+        table_fmt: str = 'fancy_grid',
+        text: bool = True,
+        plots: bool = True,
+        text_filepath: Optional[str] = None,
+        plots_folderpath: Optional[str] = None
     ):
-        # Display phi/psi convergence tables
-        self._print_convergence_tables(
-            convergence_rates=self.phi_rates,
-            quantity='phi',
-            fmt=table_fmt
-        )
-        self._print_convergence_tables(
-            convergence_rates=self.psi_rates,
-            quantity='psi',
-            fmt=table_fmt
-        )
+        if text:
+            # Display phi/psi convergence tables
+            self._print_convergence_tables(
+                convergence_rates=self.phi_rates,
+                quantity='phi',
+                fmt=table_fmt,
+                file=text_filepath,
+                append=False
+            )
+            self._print_convergence_tables(
+                convergence_rates=self.psi_rates,
+                quantity='psi',
+                fmt=table_fmt,
+                file=text_filepath,
+                append=True
+            )
 
-        # Display phi/psi convergence plots
-        self._draw_convergence_plots(
-            convergence_rates=self.phi_rates,
-            quantity='$\phi$'
-        )
-        self._draw_convergence_plots(
-            convergence_rates=self.psi_rates,
-            quantity='$\psi$'
-        )
-
-        
+        if plots:
+            # Display phi/psi convergence plots
+            self._draw_convergence_plots(
+                convergence_rates=self.phi_rates,
+                quantity='$\phi$',
+                folder=plots_folderpath
+            )
+            self._draw_convergence_plots(
+                convergence_rates=self.psi_rates,
+                quantity='$\psi$',
+                folder=plots_folderpath
+            )
 
 
 class MKFE_FD_ScatteringProblem:
@@ -356,20 +515,21 @@ class MKFE_FD_ScatteringProblem:
         self,
         obstacle_config_file: str,
         medium_config_file: str,
-        numerical_config_file: str
+        numerical_config_file: str,
+        reference_config_file: Optional[str] = None
     ):
         """Initialize a multiple-scattering problem.
         
         Args:
             medium (LinearElasticMedium): The elastic medium where
                 the scattering problem is taking place 
-            incident_wave (IncidentPlaneWave): The incident plane 
-                wave for this scattering problem 
-            num_farfield_terms (int): The number of terms in the
-                farfield expansion to use at each obstacle
             obstacle_config_file (str): A path to the obstacle
                 configuration JSON file that contains information
                 about obstacle geometries and boundary conditions.
+            reference_solution (MKFE_FD_ScatteringProblem): An optional
+                reference solution on a very refined grid. If multiple 
+                grids are provided, the most refined is taken to be
+                the reference solution.
         """
         # Get medium and incident wave info from config
         # (populates self.medium and self.incident_wave)
@@ -397,23 +557,21 @@ class MKFE_FD_ScatteringProblem:
 
         # Create a name for this scattering problem (for recalling
         # from storage)
-        obstacle_configuration_label = (
-            os.path.splitext(
-                os.path.basename(obstacle_config_file)
-            )[0]
+        self.obstacle_config_label = get_filename_base(obstacle_config_file)
+        self.medium_config_label = get_filename_base(medium_config_file)
+        self.numerical_config_label = get_filename_base(numerical_config_file)
+
+        self.problem_label = get_full_configuration_filename_base(
+            obstacle_config=obstacle_config_file,
+            medium_config=medium_config_file,
+            numerical_config=numerical_config_file,
+            reference_config=reference_config_file
         )
-        medium_configuration_label = (
-            os.path.splitext(
-                os.path.basename(medium_config_file)
-            )[0]
-        )
-        numerical_configuration_label = (
-            os.path.splitext(
-                os.path.basename(numerical_config_file)
-            )[0]
-        )
-        self.problem_label = f"scattering_{obstacle_configuration_label}_{medium_configuration_label}_{numerical_configuration_label}"
         
+        # Get reference solution
+        if reference_config_file is not None:
+            self._get_reference_solution(reference_config_file)
+
 
     def _add_obstacle_geometries_from_config(self, config_file:str) -> None:
         """Adds obstacles from a configuration JSON file.
@@ -477,9 +635,25 @@ class MKFE_FD_ScatteringProblem:
         # Parse numerical method info
         self.PPWs = [int(PPW) for PPW in config['PPWs']]
         self.num_farfield_terms = int(config['num_farfield_terms'])
+        self.experimental_tol = config['tol']
+        self.experimental_maxiter = config['maxiter']
 
+    def _get_reference_solution(self, reference_config_file:str) -> None:
+        with open(reference_config_file, 'r') as in_json_file:
+            config = json.load(in_json_file)
 
+        # Parse reference solution numerical method info 
+        self.reference_config_label = get_filename_base(reference_config_file)
+        
+        self.reference_PPW = [int(PPW) for PPW in config['PPWs']][0]
+        self.reference_num_farfield_terms = int(config['num_farfield_terms'])
+        self.reference_tol = config['tol']
+        self.reference_maxiter = config['maxiter']
 
+        # Get the reference solution
+        logging.info(f"Loading Reference Solution (PPW={self.reference_PPW}, Num Farfield Terms={self.reference_num_farfield_terms}) . . .")
+        self.reference_solution, _ = self.solve_PPW(self.reference_PPW, Algorithm.GAUSS_SEIDEL, reference=True, cache=True)
+        logging.info("Done loading reference solution.")
 
     def _setup_scattering_obstacles_for_PPW(
         self,
@@ -521,11 +695,83 @@ class MKFE_FD_ScatteringProblem:
             
         # TODO: Handle parametric obstacles
 
+    def _cache_PPW_solution(
+        self,
+        PPW: int,
+        solution: list[MKFE_FDObstacle], 
+        reference: bool = False
+    ) -> None:
+        """Cache a given solution at a given PPW resolution.
+        
+        Caches are stored in the filepath
+        results/obstacles/{obstacle_config}/{medium_config}_{numerical_config}/PPW_{PPW}.pickle
+        """
+        # Create cache directory for this setup if it hasn't already been created
+        if reference:
+            cache_folder = os.path.join(
+                "results",
+                "solved_objects",
+                "obstacles",
+                self.obstacle_config_label,
+                self.medium_config_label,
+                f"farfield_{self.reference_num_farfield_terms}",
+            )
+        else:
+            cache_folder = os.path.join(
+                "results",
+                "solved_objects",
+                "obstacles",
+                self.obstacle_config_label,
+                self.medium_config_label,
+                f"farfield_{self.num_farfield_terms}",
+            )
+        os.makedirs(cache_folder, exist_ok=True)
+
+        # Now, cache this obstacle setup if it doesn't exist 
+        cache_file = os.path.join(cache_folder, f"PPW_{PPW}.pickle")
+        if not os.path.exists(cache_file):
+            with open(cache_file, 'wb') as outfile:
+                cloudpickle.dump(solution, outfile)
+
+    def _check_cached_PPW_solution(
+        self, 
+        PPW: int,
+        reference: bool = False
+    ) -> Optional[list[MKFE_FDObstacle]]:
+        """Checks for cached solution of this obstacle configuration
+        at a given PPW for a given numerical solution set of parameters
+        (useful for distinguishing between reference and trial solutions)"""
+        if reference:
+            cache_file = os.path.join(
+                "results",
+                "solved_objects",
+                "obstacles",
+                self.obstacle_config_label,
+                self.medium_config_label,
+                f"farfield_{self.reference_num_farfield_terms}",
+                f"PPW_{PPW}.pickle"
+            )
+        else:
+            cache_file = os.path.join(
+                "results",
+                "solved_objects",
+                "obstacles",
+                self.obstacle_config_label,
+                self.medium_config_label,
+                f"farfield_{self.num_farfield_terms}",
+                f"PPW_{PPW}.pickle"
+            )
+        if os.path.exists(cache_file):
+            with open(cache_file, 'rb') as infile:
+                return cloudpickle.load(infile)
+        else:
+            return None 
+
     def _solve_PPW_Gauss_Seidel(
         self,
         PPW: int,
-        tol: float = 1e-5,
-        maxiter: int = 100
+        reference: bool = False,
+        cache: bool = False
     ) -> tuple[list[MKFE_FDObstacle], int]:
         """Solve the multiple scattering problem at a given PPW using
         Gauss Seidel algorithm.
@@ -533,53 +779,73 @@ class MKFE_FD_ScatteringProblem:
         Assumes that self.obstacles is populated with a fresh set 
         of obstacles with unknowns all set to zeros.
         """
-        logging.debug(f"Using Gauss-Seidel iteration with PPW = {PPW}, tol = {tol:.4e}, and maxiter = {maxiter}")
+        if reference:
+            tol = self.reference_tol
+            maxiter = self.reference_maxiter
+        else:
+            tol = self.experimental_tol 
+            maxiter = self.experimental_maxiter
+        logging.info(f"Setting up Sparse LU solvers for PPW = {PPW}")
+        lu_solvers = [FD_SparseLUSolver(obstacle.fd_matrix) for obstacle in self.obstacles[PPW]]
 
-        prev_unknowns = np.hstack([obstacle.fd_unknowns for obstacle in self.obstacles[PPW]])   # Will be all zeros to start out with 
-        for itr in range(maxiter):
-            logging.debug(f"Beginning iteration {itr}")
-            cur_unknowns = np.array([])
-            
-            # Solve single scattering problems (using most currently
-            # updated set of unknowns/farfield coefficients at each obstacle
-            # during iteration when filling in forcing vectors)
-            for i, obstacle in enumerate(self.obstacles[PPW]):
-                logging.debug(f"Solving Single-Scattering Problem at Obstacle ID {obstacle.id}")
-                other_obstacles = self.obstacles[PPW][:i] + self.obstacles[PPW][i+1:]
-                obstacle.solve(other_obstacles, self.incident_wave)
-                
-                # Store the updated values of these unknowns for comparison
-                cur_unknowns = np.hstack((cur_unknowns, obstacle.fd_unknowns))
-            
-            # Check for convergence (in max norm)
-            max_err = np.max(np.abs(cur_unknowns - prev_unknowns))
-            prev_unknowns = cur_unknowns
-            
-            logging.info(f"Max Error at iteration {itr}: {max_err:.5e}")
-            if max_err < tol:
-                logging.info(f"Gauss-Seidel Iteration Converged for PPW = {PPW} after {itr} iterations with max-norm error {max_err:.5e}")
-                return self.obstacles[PPW], itr
-            
-            # Check that we didn't have something really bad happen
-            if (not np.isfinite(max_err)) or (max_err > 1e8):
-                logging.exception(f"ERROR: Gauss-Seidel Iteration Diverged for PPW = {PPW} after {itr} iterations.")
-                raise AlgorithmDivergedException(f"Gauss-Seidel Iteration Diverged for PPW = {PPW} after {itr} iterations.")
-            
         
-        # Getting here means that the algorithm did not converge.
-        logging.exception(
-            f"solve_PPW() with PPW={PPW} did not converge in {maxiter} iterations."
-        )
-        raise MaxIterationsExceedException(
-            f"solve_PPW() with PPW={PPW} did not converge in {maxiter} iterations."
-        )
-    
+        try:
+            logging.info(f"Using Gauss-Seidel iteration with PPW = {PPW}, tol = {tol:.4e}, and maxiter = {maxiter}")
+            prev_unknowns = np.hstack([obstacle.fd_unknowns for obstacle in self.obstacles[PPW]])   # Will be all zeros to start out with 
+            for itr in range(maxiter):
+                logging.debug(f"Beginning iteration {itr}")
+                cur_unknowns = np.array([])
+                
+                # Solve single scattering problems (using most currently
+                # updated set of unknowns/farfield coefficients at each obstacle
+                # during iteration when filling in forcing vectors)
+                for i, (obstacle, solver) in enumerate(zip(self.obstacles[PPW], lu_solvers)):
+                    logging.debug(f"Solving Single-Scattering Problem at Obstacle ID {obstacle.id}")
+                    other_obstacles = self.obstacles[PPW][:i] + self.obstacles[PPW][i+1:]
+                    obstacle.solve(solver, other_obstacles, self.incident_wave)
+                    
+                    # Store the updated values of these unknowns for comparison
+                    cur_unknowns = np.hstack((cur_unknowns, obstacle.fd_unknowns))
+                
+                # Check for convergence (in max norm)
+                max_err = np.max(np.abs(cur_unknowns - prev_unknowns))
+                prev_unknowns = cur_unknowns
+                
+                logging.info(f"Max Error at iteration {itr}: {max_err:.5e}")
+                if max_err < tol:
+                    logging.info(f"Gauss-Seidel Iteration Converged for PPW = {PPW} after {itr} iterations with max-norm error {max_err:.5e}")
+                    if cache:
+                        self._cache_PPW_solution(PPW, self.obstacles[PPW], reference)
+                    return self.obstacles[PPW], itr     # Only cache if converged
+                
+                # Check that we didn't have something really bad happen
+                if (not np.isfinite(max_err)) or (max_err > 1e8):
+                    logging.exception(f"ERROR: Gauss-Seidel Iteration Diverged for PPW = {PPW} after {itr} iterations.")
+                    if cache:
+                        self._cache_PPW_solution(PPW, self.obstacles[PPW], reference)
+                    raise AlgorithmDivergedException(f"Gauss-Seidel Iteration Diverged for PPW = {PPW} after {itr} iterations.")
+                
+            
+            # Getting here means that the algorithm did not converge.
+            logging.exception(
+                f"solve_PPW() with PPW={PPW} did not converge in {self.experimental_maxiter} iterations."
+            )
+            if cache:
+                self._cache_PPW_solution(PPW, self.obstacles[PPW], reference)
+            raise MaxIterationsExceedException(
+                f"solve_PPW() with PPW={PPW} did not converge in {self.experimental_maxiter} iterations."
+            )
+        finally:
+            # Delete RAM-intensive solvers
+            del lu_solvers
+            gc.collect()    
+
     def solve_PPW(
         self,
         PPW: int,
         algorithm: Algorithm,
-        tol: float = 1e-5,
-        maxiter: int = 100
+        reference: bool = False,
+        cache: bool = False
     ) -> tuple[list[MKFE_FDObstacle], int]:
         """Solve the multiple-elastic-scattering problem for grids
         with a resolution corresponding to a given number of 
@@ -590,10 +856,6 @@ class MKFE_FD_ScatteringProblem:
                 determine obstacle grid resolution.
             algorithm (algorithm): The iterative algorithm to use
                 to solve the single-scattering systems
-            tol (float): The minimum error tolerance between 
-                successive iterations to determine convergence
-            maxiter (int): The maximum number of iterations to
-                run the given iterative algorithm
 
         Returns:
             list[MKFE_FDObstacle]: A list of the obstacles
@@ -612,14 +874,30 @@ class MKFE_FD_ScatteringProblem:
         """
         logging.debug(f"Entering solve_PPW() with PPW = {PPW}")
 
+        ## Check for cached versions of these obstacles
+        if reference:
+            cached_solution = self._check_cached_PPW_solution(PPW, reference=True) 
+        else:
+            cached_solution = self._check_cached_PPW_solution(PPW, reference=False)
+        
+        if cached_solution is not None:
+            if not reference:
+                self.obstacles[PPW] = cached_solution
+            return cached_solution, -1  # -1 denotes we got it from cache
+
+        ## Otherwise, run an iterative algorithm to solve the multiple
+        ## scattering problem at this resolution
+        
         # Create obstacle objects and initialize finite-difference
         # matrices for use during iteration
         self._setup_scattering_obstacles_for_PPW(PPW)
 
         # Iterate using the desired algorithm
-        # TODO: (Potentially) Add GMRES as an option
         if algorithm is Algorithm.GAUSS_SEIDEL:
-            return self._solve_PPW_Gauss_Seidel(PPW, tol, maxiter)
+            solution = self._solve_PPW_Gauss_Seidel(PPW, reference, cache)
+            if reference:
+                self.obstacles.pop(PPW)
+            return solution
         else:
             raise ValueError(
                 "Only supported iterative algorithm is Algorithm.GAUSS_SEIDEL at the moment"
@@ -628,8 +906,6 @@ class MKFE_FD_ScatteringProblem:
     def solve_PPWs(
         self,
         algorithm: Algorithm,
-        tol: float = 1e-5,
-        maxiter: int = 100,
         reference: bool = False,
         pickle: bool = False
     ) -> None:
@@ -641,12 +917,7 @@ class MKFE_FD_ScatteringProblem:
         """
         for PPW in self.PPWs:
             try:
-                self.solve_PPW(
-                    PPW,
-                    algorithm,
-                    tol,
-                    maxiter
-                )
+                self.solve_PPW(PPW, algorithm)
             except (AlgorithmDivergedException, MaxIterationsExceedException):
                 logging.exception(f"Saved PPW={PPW} at corrupted state. Continuing on with remaining PPWs...")
 
@@ -657,25 +928,39 @@ class MKFE_FD_ScatteringProblem:
         # If desired, pickle this object for further analysis
         if pickle:
             if reference:
-                outfile_name = f"results/reference/{self.problem_label}.pickle"
+                outfile_name = os.path.join("results", "solved_objects", "convergence_experiments", "reference", f"{self.problem_label}.pickle")
                 with open(outfile_name, 'wb') as outfile:
                     cloudpickle.dump(self, outfile)
             else:
-                outfile_name = f"results/{self.problem_label}.pickle"
+                outfile_name = os.path.join("results", "solved_objects", "convergence_experiments", "numerical", f"{self.problem_label}.pickle")
                 with open(outfile_name, 'wb') as outfile:
                     cloudpickle.dump(self, outfile)
             
 
     def analyze_convergence(self) -> ScatteringConvergenceAnalyzerPolar:
-        """Analyzes the approximate convergence rate using Richardson extrapolation."""
-        if len(self.obstacles.keys()) < 3:
-            raise ValueError("Cannot analyze convergence unless there are 3 distinct PPW solutions.")
+        """Analyzes the approximate convergence rate.
+        
+        Uses Richardson extrapolation if no reference solution is provided.
+        Otherwise, uses a standard convergence analysis, treating the reference
+        solution as the exact solution on the provided grid.
+        """
+        if hasattr(self, 'reference_solution') and self.reference_solution is not None:
+            self.convergence_analyzer.analyze_convergence_reference(
+                solved_obstacles=self.obstacles,
+                reference_solution=self.reference_solution
+            )
+        else:
+            # Analyze by point-by-point Richardson extrapolation
+            # from coarse to fine grids
+            if len(self.obstacles.keys()) < 3:
+                raise ValueError("Cannot analyze convergence using Richardson extrapolation unless there are 3 distinct PPW solutions.")
 
-        self.convergence_analyzer.analyze_convergence(self.obstacles)
+            self.convergence_analyzer.analyze_convergence_richardson_extrapolation(self.obstacles)
+        
         return self.convergence_analyzer
 
 
-    def plot_total_phi(self, PPW: int):
+    def plot_total_phi(self, PPW: int, plot_folder: Optional[str] = None):
         """Plot total phi for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
@@ -692,12 +977,18 @@ class MKFE_FD_ScatteringProblem:
                 u_inc=self.incident_wave,
                 other_obstacles=other_obstacles
             )
-
+        
+        # Show/save plot
         plt.title(f"Total $\phi$ (PPW = {PPW})")
         plt.colorbar()
-        plt.show()
+        if plot_folder is None:
+            plt.show()
+        else:
+            plot_img_path = os.path.join(plot_folder, "phi_total_contour.png")
+            plt.savefig(plot_img_path)
+            plt.clf()
 
-    def plot_total_psi(self, PPW: int):
+    def plot_total_psi(self, PPW: int, plot_folder: Optional[str] = None):
         """Plot total psi for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
@@ -715,11 +1006,18 @@ class MKFE_FD_ScatteringProblem:
                 other_obstacles=other_obstacles
             )
 
+        # Display plot
         plt.title(f"Total $\psi$ (PPW = {PPW})")
         plt.colorbar()
-        plt.show()
+        if plot_folder is None:
+            plt.show()
+        else:
+            plot_img_path = os.path.join(plot_folder, "psi_total_contour.png")
+            plt.savefig(plot_img_path)
+            plt.clf()
 
-    def plot_total_displacement(self, PPW:int, step:int=1):
+
+    def plot_total_displacement(self, PPW:int, step:int=1, plot_folder: Optional[str] = None):
         """Plot total displacement for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
@@ -736,10 +1034,43 @@ class MKFE_FD_ScatteringProblem:
                 incident_wave=self.incident_wave,
                 step=step
             )
-            
+        
+        # Display plot
         plt.title(f"Total Displacement Field (PPW = {PPW})")
         plt.colorbar()
-        plt.show()
+        if plot_folder is None:
+            plt.show()
+        else:
+            plot_img_path = os.path.join(plot_folder, "total_displacement_vector_field.png")
+            plt.savefig(plot_img_path)
+            plt.clf()
+
+
+    def __getstate__(self):
+        """Used when preparing to save a pickled version of this object."""
+        # Prepare all class attributes 
+        state = self.__dict__.copy()
+        state.pop('obstacles')      # Don't save the full obstacles list here. Recreate them from serialization
+
+        return state
+    
+    def __setstate__(self, state):
+        """Restore the object from a serialized state"""
+    
+        # Recreate serializable attributes
+        self.__dict__.update(state)
+        self.obstacles = dict()
+        missing_PPWs = []
+        for PPW in self.PPWs:
+            cached_PPW_solution = self._check_cached_PPW_solution(PPW)
+            if cached_PPW_solution is None:
+                missing_PPWs.append(PPW)
+            else:
+                self.obstacles[PPW] = cached_PPW_solution
+        if len(missing_PPWs) > 0:
+            raise RuntimeError(f"Error: Missing cache files for PPWs: {missing_PPWs}.")
+
+
                 
 
         

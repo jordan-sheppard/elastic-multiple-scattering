@@ -23,6 +23,7 @@ from .coefficients import (
     ElasticPolarFarfieldEvaluator, FarfieldAngularCoefficients
 )
 from .waves import IncidentPlanePWaveEvaluator
+from .solvers import FDSolver
 
 
 class FDObstacle(BaseObstacle):
@@ -119,7 +120,6 @@ class FDObstacle(BaseObstacle):
         # Create unknown vector and unknown matrix
         self.fd_unknowns = np.zeros(self.num_unknowns, dtype='complex128') 
         self.fd_matrix = self.construct_fd_matrix()    # SHOULD BE OVERRIDDEN IN SUBCLASS
-        self.fd_matrix_LU = spla.splu(self.fd_matrix)
 
         # Create solution vectors/matrices 
         self.phi_vals = np.zeros(self.grid.shape, dtype='complex128')
@@ -149,6 +149,7 @@ class FDObstacle(BaseObstacle):
 
     def solve(
         self,
+        solver: FDSolver,
         obstacles: list[Self],
         incident_wave: Optional[IncidentPlanePWave] = None
     ):
@@ -170,13 +171,18 @@ class FDObstacle(BaseObstacle):
             at all gridpoints
 
         Args:
+            solver (FDSolver): An object which has a .solve() method and
+                returns the solution to the system Ax=F, where F 
+                is the forcing vector from the other obstacles/incident
+                wave, and A is the finite-difference matrix at this
+                obstacle.
             obstacles (list[FDObstacle]) : A list of other obstacles 
                 whose scattered waves are incident upon this obstacle
             incident_wave (IncidentPlaneWave): If provided, an
                 incident plane wave
         """
         F = self.construct_forcing_vector(obstacles, incident_wave)
-        self.fd_unknowns = self.fd_matrix_LU.solve(F)
+        self.fd_unknowns = solver.solve(F)
         self.parse_raw_FD_result(self.fd_unknowns)
     
 
@@ -1249,9 +1255,6 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         # Prepare all class attributes 
         state = self.__dict__.copy()
 
-        # Ignore non-serializable attributes
-        state.pop('fd_matrix_LU')
-
         return state
     
     def __setstate__(self, state):
@@ -1259,8 +1262,6 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         # Recreate serializable attributes
         self.__dict__.update(state)
 
-        # Recreate the previously-ignored non-serializable attributes
-        self.fd_matrix_LU = spla.splu(self.fd_matrix)
     
 
 
