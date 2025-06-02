@@ -18,12 +18,6 @@ class BaseObstacle(ABC):
         self.center_global = center
         self.bc = boundary_condition
         self.id = next(self.id_iter)
-
-        # Only allow hard BCs for now
-        if self.bc is BoundaryCondition.SOFT:
-            raise NotImplementedError(
-                "Error: Soft BC not implemented yet."
-            )
     
     @classmethod 
     def reset_id_counter(cls):
