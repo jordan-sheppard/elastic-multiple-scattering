@@ -353,29 +353,31 @@ class ElasticPolarFarfieldEvaluator:
                 from this obstacle
         """
         # Store mbar-local grid for wave evaluation in various coordinate systems:
-        self.R_mbar, self.Theta_mbar = dest_local_grid.r_local, dest_local_grid.theta_local     # mbar-local polar coordinates
+        self.R_m, self.Theta_m = dest_local_grid.r_local, dest_local_grid.theta_local     # mbar-local polar coordinates
         self.R_global, self.Theta_global = dest_local_grid.local_coords_to_global_polar()       # Global polar coordinates  
         self.X_global, self.Y_global = dest_local_grid.local_coords_to_global_XY()              # Global cartesian coordinates
-        self.R_m, self.Theta_m = source_local_grid.global_XY_to_local_coords(self.X_global, self.Y_global)   # m-local polar coordinates
+        self.R_mbar, self.Theta_mbar = source_local_grid.global_XY_to_local_coords(self.X_global, self.Y_global)   # m-local polar coordinates
 
         # Parse m-local radius of obstale m artificial boundary C^m
-        self.R_artificial_boundary_m = source_local_grid.r_vals[-1]      # Assumes artificial boundary is the final physical gridpoint
+        self.R_artificial_boundary_mbar = source_local_grid.r_vals[-1]      # Assumes artificial boundary is the final physical gridpoint
 
-        # Validate all gridpoints at destination (mbar) grid 
-        # are outside of computational domain for source (m) obstacle 
-        if np.any(self.R_m < self.R_artificial_boundary_m):
-            raise ValueError("Destination grid must lie entirely outside of source grid's artificial boundary") 
+        # Validate all gridpoints at destination (m) grid 
+        # are outside of computational domain for source (mbar) obstacle 
+        if np.any(self.R_mbar < self.R_artificial_boundary_mbar):
+            raise ValueError("Destination (m) grid must lie entirely outside of source (mbar) grid's artificial boundary") 
 
         # Store medium attributes 
         self.kp = medium.kp
         self.ks = medium.ks
+        self.lam = medium.lam 
+        self.mu = medium.mu
 
         # Store truncation attributes 
         self.num_farfield_terms = num_farfield_terms
 
-        # Create interpolator for all m-local farfield coefficients
-        # defined at the provided m-local angular gridpoint values
-        self.m_angle_interpolator = PeriodicInterpolator1D(
+        # Create interpolator for all mbar-local farfield coefficients
+        # defined at the provided mbar-local angular gridpoint values
+        self.mbar_angle_interpolator = PeriodicInterpolator1D(
             periodic_domain=(0., 2*np.pi),
             xi=source_local_grid.theta_vals
         )
@@ -394,10 +396,10 @@ class ElasticPolarFarfieldEvaluator:
         ## Get repeated constants (use array broadcasting)
         # I) Gridpoint-based arrays (that is,evaluated at each [j,i]
         #    gridpoint of mbar-local grid. Should each have shape
-        #    (N_{theta}^{mbar}, N_r^{mbar})
-        radius_ratios = self.R_artificial_boundary_m / self.R_m      
-        kpR = self.kp * self.R_m
-        ksR = self.ks * self.R_m
+        #    (N_{theta}^{m}, N_r^{m})
+        radius_ratios = self.R_artificial_boundary_mbar / self.R_mbar      
+        kpR = self.kp * self.R_mbar
+        ksR = self.ks * self.R_mbar
         Hp0 = hankel1(0, kpR)
         Hp1 = hankel1(1, kpR)
         Hs0 = hankel1(0, ksR) 
@@ -410,25 +412,25 @@ class ElasticPolarFarfieldEvaluator:
 
         ## Get radial farfield coefficients
         # I) Radial cefficients at other obstacle's gridpoints
-        # NOTE: All of these will have shape (L, N_{theta}^{mbar}, N_r^{mbar})
-        self.V_m_p = ratio_pow * Hp0
-        self.V_m_s = ratio_pow * Hs0
-        self.W_m_p = ratio_pow * Hp1 
-        self.W_m_s = ratio_pow * Hs1
-        self.A_m_p = -self.kp * ratio_pow * (Hp1 + (l * Hp0)/kpR)
-        self.A_m_s = -self.ks * ratio_pow * (Hs1 + (l * Hs0)/ksR)
-        self.B_m_p = -self.kp * ratio_pow * (-Hp0 + ((l+1) * Hp1)/kpR)
-        self.B_m_s = -self.ks * ratio_pow * (-Hs0 + ((l+1) * Hs1)/ksR)
-        self.C_m_p = self.kp**2 * ratio_pow * (
+        # NOTE: All of these will have shape (L, N_{theta}^{m}, N_r^{m})
+        self.V_p = ratio_pow * Hp0
+        self.V_s = ratio_pow * Hs0
+        self.W_p = ratio_pow * Hp1 
+        self.W_s = ratio_pow * Hs1
+        self.A_p = -self.kp * ratio_pow * (Hp1 + (l * Hp0)/kpR)
+        self.A_s = -self.ks * ratio_pow * (Hs1 + (l * Hs0)/ksR)
+        self.B_p = -self.kp * ratio_pow * (-Hp0 + ((l+1) * Hp1)/kpR)
+        self.B_s = -self.ks * ratio_pow * (-Hs0 + ((l+1) * Hs1)/ksR)
+        self.C_p = self.kp**2 * ratio_pow * (
                 -Hp0 + ((2*l + 1) * Hp1)/kpR + (l*(l+1)*Hp0)/(kpR**2)
         )
-        self.C_m_s = self.ks**2 * ratio_pow * (
+        self.C_s = self.ks**2 * ratio_pow * (
             -Hs0 + ((2*l + 1) * Hs1)/ksR + (l*(l+1)*Hs0)/(ksR**2)
         )
-        self.D_m_p =  self.kp**2 * ratio_pow * (
+        self.D_p =  self.kp**2 * ratio_pow * (
             -Hp1 - ((2*l + 1) * Hp0)/kpR + ((l+2)*(l+1)*Hp1)/(kpR**2)
         )
-        self.D_m_s = self.ks**2 * ratio_pow * (
+        self.D_s = self.ks**2 * ratio_pow * (
             -Hs1 - ((2*l + 1) * Hs0)/ksR + ((l+2)*(l+1)*Hs1)/(ksR**2)
         )
 
@@ -438,17 +440,19 @@ class ElasticPolarFarfieldEvaluator:
         """Initialize all entries of the rotation matrices for 
         necessary changes of coordinates"""
         # NOTE: All of these following arrays will have shape (N_{theta}^{mbar}, N_r^{mbar})
-        # Rotation matrices from m-local to mbar-local
-        angles_m_to_mbar = (self.Theta_m - self.Theta_mbar)
-        self.cosine_rotation_m_to_mbar = np.cos(angles_m_to_mbar)
-        self.sine_rotation_m_to_mbar = np.sin(angles_m_to_mbar)
+        # Rotation matrices from mbar-local to m-local
+        angles_mbar_to_m = (self.Theta_mbar - self.Theta_m)
+        self.cosine_rotation_mbar_to_m = np.cos(angles_mbar_to_m)
+        self.sine_rotation_mbar_to_m = np.sin(angles_mbar_to_m)
 
-        # Rotation matrices from m-local to global
-        angles_m_to_global = (self.Theta_m - self.Theta_global)
-        self.cosine_rotation_m_to_global = np.cos(angles_m_to_global)
-        self.sine_rotation_m_to_global = np.sin(angles_m_to_global)
+        # Rotation matrices from mbar-local to global
+        angles_mbar_to_global = (self.Theta_mbar - self.Theta_global)
+        self.cosine_rotation_mbar_to_global = np.cos(angles_mbar_to_global)
+        self.sine_rotation_mbar_to_global = np.sin(angles_mbar_to_global)
 
         # Polar-to-cartesian rotation matrices from mbar-local polar to mbar-local cartesian
+        self.cos_m = np.cos(self.Theta_m)
+        self.sin_m = np.sin(self.Theta_m)
         self.cos_mbar = np.cos(self.Theta_mbar)
         self.sin_mbar = np.sin(self.Theta_mbar)
 
@@ -478,10 +482,10 @@ class ElasticPolarFarfieldEvaluator:
                 angular derivative of coefficient) values on each 
                 of the gridpoints in this object's stored grid.
         """
-        self.m_angle_interpolator.update_func_vals(coeffs)
-        coeff_vals = self.m_angle_interpolator.interpolate(self.Theta_m)            # Shape (N_{theta}^{mbar}, N_r^{mbar}, L)
-        d_coeff_vals = self.m_angle_interpolator.interpolate(self.Theta_m, der=1)   # Shape (N_{theta}^{mbar}, N_r^{mbar}, L)
-        d2_coeff_vals = self.m_angle_interpolator.interpolate(self.Theta_m, der=2)  # Shape (N_{theta}^{mbar}, N_r^{mbar}, L)
+        self.mbar_angle_interpolator.update_func_vals(coeffs)
+        coeff_vals = self.mbar_angle_interpolator.interpolate(self.Theta_mbar)            # Shape (N_{theta}^{mbar}, N_r^{mbar}, L)
+        d_coeff_vals = self.mbar_angle_interpolator.interpolate(self.Theta_mbar, der=1)   # Shape (N_{theta}^{mbar}, N_r^{mbar}, L)
+        d2_coeff_vals = self.mbar_angle_interpolator.interpolate(self.Theta_mbar, der=2)  # Shape (N_{theta}^{mbar}, N_r^{mbar}, L)
 
         return InterpolatedGridFunction(
             f=coeff_vals,
@@ -574,27 +578,27 @@ class ElasticPolarFarfieldEvaluator:
 
 
     def Kp(self, boundary_only: bool = False) -> np.ndarray:
-        """Evaluates the compressional K_{m,L}^p farfield expansion
-        at each gridpoint of the stored mbar-local grid.
+        """Evaluates the compressional K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored m-local grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
                 the gridpoints on the physical (i=0) boundary
-                of obstacle mbar's grid. Defaults to False.
+                of obstacle m's grid. Defaults to False.
         
         Returns:
-            np.ndarray: A shape (N_{theta}^{mbar}, N_{r}^{mbar}) array (or
-                shape (N_{theta}^{mbar},) array if on boundary) whose
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
                 [j,i] (or [j], respectively) entry contains the value
                 of the compressional farfield expansion at the (i,j)
-                mbar-local gridpoint (or (j) mbar-local angular
+                m-local gridpoint (or (j) m-local angular
                 gridpoint):
-                K_{m,L}^p ( r_{mbar}[i], theta_{mbar}[j] )
-                (or K_{m,L}^p ( r_0^{mbar}, theta_{mbar}[j] ) )
+                K_{mbar,L}^p ( r_{m}[i], theta_{m}[j] )
+                (or K_{mbar,L}^p ( r_0^{m}, theta_{m}[j] ) )
         """
         return self._product_sum_coeffs(
-            f_radial_coeffs=self.V_m_p,
-            g_radial_coeffs=self.W_m_p,
+            f_radial_coeffs=self.V_p,
+            g_radial_coeffs=self.W_p,
             f_angular_coeffs=self.fp_coeffs.f,
             g_angular_coeffs=self.gp_coeffs.f,
             boundary_only=boundary_only
@@ -602,27 +606,27 @@ class ElasticPolarFarfieldEvaluator:
     
 
     def Ks(self, boundary_only: bool = False) -> np.ndarray:
-        """Evaluates the shear K_{m,L}^s farfield expansion
-        at each gridpoint of the stored mbar-local grid.
+        """Evaluates the shear K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored m-local grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
                 the gridpoints on the physical (i=0) boundary
-                of obstacle mbar's grid. Defaults to False.
+                of obstacle m's grid. Defaults to False.
         
         Returns:
-           np.ndarray: A shape (N_{theta}^{mbar}, N_{r}^{mbar}) array (or
-                shape (N_{theta}^{mbar},) array if on boundary) whose
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
                 [j,i] (or [j], respectively) entry contains the value
                 of the shear farfield expansion at the (i,j)
-                mbar-local gridpoint (or (j) mbar-local angular
+                m-local gridpoint (or (j) m-local angular
                 gridpoint):
-                K_{m,L}^s ( r_{mbar}[i], theta_{mbar}[j] )
-                (or K_{m,L}^s ( r_0^{mbar}, theta_{mbar}[j] ) )
+                K_{mbar,L}^s ( r_{m}[i], theta_{m}[j] )
+                (or K_{mbar,L}^s ( r_0^{m}, theta_{m}[j] ) )
         """
         return self._product_sum_coeffs(
-            f_radial_coeffs=self.V_m_s,
-            g_radial_coeffs=self.W_m_s,
+            f_radial_coeffs=self.V_s,
+            g_radial_coeffs=self.W_s,
             f_angular_coeffs=self.fs_coeffs.f,
             g_angular_coeffs=self.gs_coeffs.f,
             boundary_only=boundary_only
@@ -630,29 +634,29 @@ class ElasticPolarFarfieldEvaluator:
     
 
     def dr_Kp(self, boundary_only: bool = False) -> np.ndarray:
-        """Evaluates the 1st (m)-local radial derivative 
-        of the compressional K_{m,L}^p farfield expansion
+        """Evaluates the 1st (mbar)-local radial derivative 
+        of the compressional K_{mbar,L}^p farfield expansion
         at each gridpoint of the stored mbar-local grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
                 the gridpoints on the physical (i=0) boundary
-                of obstacle mbar's grid. Defaults to False.
+                of obstacle m's grid. Defaults to False.
         
         Returns:
-            np.ndarray: A shape (N_{theta}^{mbar}, N_{r}^{mbar}) array (or
-                shape (N_{theta}^{mbar},) array if on boundary) whose
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
                 [j,i] (or [j], respectively) entry contains the value
-                of the 1st (m)-local radial derivative of 
+                of the 1st (mbar)-local radial derivative of 
                 the compressional farfield expansion at the (i,j)
-                mbar-local gridpoint (or (j) mbar-local angular
+                m-local gridpoint (or (j) m-local angular
                 gridpoint):
-                dr K_{m,L}^p ( r_{mbar}[i], theta_{mbar}[j] )
-                (or dr K_{m,L}^p ( r_0^{mbar}, theta_{mbar}[j] ) )
+                dr_{mbar} K_{mbar,L}^p ( r_{m}[i], theta_{m}[j] )
+                (or dr_{mbar} K_{mbar,L}^p ( r_0^{m}, theta_{m}[j] ) )
         """
         return self._product_sum_coeffs(
-            f_radial_coeffs=self.A_m_p,
-            g_radial_coeffs=self.B_m_p,
+            f_radial_coeffs=self.A_p,
+            g_radial_coeffs=self.B_p,
             f_angular_coeffs=self.fp_coeffs.f,
             g_angular_coeffs=self.gp_coeffs.f,
             boundary_only=boundary_only
@@ -660,29 +664,29 @@ class ElasticPolarFarfieldEvaluator:
 
 
     def dr_Ks(self, boundary_only: bool = False) -> np.ndarray:
-        """Evaluates the 1st (m)-local radial derivative 
-        of the shear K_{m,L}^s farfield expansion
+        """Evaluates the 1st (mbar)-local radial derivative 
+        of the shear K_{mbar,L}^s farfield expansion
         at each gridpoint of the stored mbar-local grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
                 the gridpoints on the physical (i=0) boundary
-                of obstacle mbar's grid. Defaults to False.
+                of obstacle m's grid. Defaults to False.
         
         Returns:
-            np.ndarray: A shape (N_{theta}^{mbar}, N_{r}^{mbar}) array (or
-                shape (N_{theta}^{mbar},) array if on boundary) whose
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
                 [j,i] (or [j], respectively) entry contains the value
-                of the 1st (m)-local radial derivative of 
+                of the 1st (mbar)-local radial derivative of 
                 the shear farfield expansion at the (i,j)
-                mbar-local gridpoint (or (j) mbar-local angular
+                m-local gridpoint (or (j) m-local angular
                 gridpoint):
-                dr K_{m,L}^s ( r_{mbar}[i], theta_{mbar}[j] )
-                (or dr K_{m,L}^s ( r_0^{mbar}, theta_{mbar}[j] ) )
+                dr_{mbar} K_{mbar,L}^s ( r_{m}[i], theta_{m}[j] )
+                (or dr_{mbar} K_{mbar,L}^s ( r_0^{m}, theta_{m}[j] ) )
         """
         return self._product_sum_coeffs(
-            f_radial_coeffs=self.A_m_s,
-            g_radial_coeffs=self.B_m_s,
+            f_radial_coeffs=self.A_s,
+            g_radial_coeffs=self.B_s,
             f_angular_coeffs=self.fs_coeffs.f,
             g_angular_coeffs=self.gs_coeffs.f,
             boundary_only=boundary_only
@@ -690,29 +694,29 @@ class ElasticPolarFarfieldEvaluator:
     
 
     def dtheta_Kp(self, boundary_only: bool = False) -> np.ndarray:
-        """Evaluates the 1st (m)-local angular derivative 
-        of the compressional K_{m,L}^p farfield expansion
-        at each gridpoint of the stored mbar-local grid.
+        """Evaluates the 1st (mbar)-local angular derivative 
+        of the compressional K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored m-local grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
                 the gridpoints on the physical (i=0) boundary
-                of obstacle mbar's grid. Defaults to False.
+                of obstacle m's grid. Defaults to False.
         
         Returns:
-            np.ndarray: A shape (N_{theta}^{mbar}, N_{r}^{mbar}) array (or
-                shape (N_{theta}^{mbar},) array if on boundary) whose
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
                 [j,i] (or [j], respectively) entry contains the value
-                of the 1st (m)-local angular derivative of 
-                the shear farfield expansion at the (i,j)
-                mbar-local gridpoint (or (j) mbar-local angular
+                of the 1st (mbar)-local angular derivative of 
+                the compressional farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
                 gridpoint):
-                dr K_{m,L}^s ( r_{mbar}[i], theta_{mbar}[j] )
-                (or dr K_{m,L}^s ( r_0^{mbar}, theta_{mbar}[j] ) )
+                dtheta_{mbar} K_{mbar,L}^p ( r_{m}[i], theta_{m}[j] )
+                (or dtheta_{mbar} K_{mbar,L}^p ( r_0^{m}, theta_{m}[j] ) )
         """
         return self._product_sum_coeffs(
-            f_radial_coeffs=self.V_m_p,
-            g_radial_coeffs=self.W_m_p,
+            f_radial_coeffs=self.V_p,
+            g_radial_coeffs=self.W_p,
             f_angular_coeffs=self.fp_coeffs.df,
             g_angular_coeffs=self.gp_coeffs.df,
             boundary_only=boundary_only
@@ -720,29 +724,29 @@ class ElasticPolarFarfieldEvaluator:
     
 
     def dtheta_Ks(self, boundary_only: bool = False) -> np.ndarray:
-        """Evaluates the 1st (m)-local angular derivative 
-        of the shear K_{m,L}^p farfield expansion
-        at each gridpoint of the stored mbar-local grid.
+        """Evaluates the 1st (mbar)-local angular derivative 
+        of the shear K_{mbar,L}^s farfield expansion
+        at each gridpoint of the stored m-local grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
                 the gridpoints on the physical (i=0) boundary
-                of obstacle mbar's grid. Defaults to False.
+                of obstacle m's grid. Defaults to False.
         
         Returns:
-            np.ndarray: A shape (N_{theta}^{mbar}, N_{r}^{mbar}) array (or
-                shape (N_{theta}^{mbar},) array if on boundary) whose
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
                 [j,i] (or [j], respectively) entry contains the value
-                of the 1st (m)-local angular derivative of 
-                the shear farfield expansion at the (i,j)
-                mbar-local gridpoint (or (j) mbar-local angular
+                of the 1st (mbar)-local angular derivative of 
+                the shearl farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
                 gridpoint):
-                dr K_{m,L}^s ( r_{mbar}[i], theta_{mbar}[j] )
-                (or dr K_{m,L}^s ( r_0^{mbar}, theta_{mbar}[j] ) )
+                dtheta_{mbar} K_{mbar,L}^s ( r_{m}[i], theta_{m}[j] )
+                (or dtheta_{mbar} K_{mbar,L}^s ( r_0^{m}, theta_{m}[j] ) )
         """
         return self._product_sum_coeffs(
-            f_radial_coeffs=self.V_m_s,
-            g_radial_coeffs=self.W_m_s,
+            f_radial_coeffs=self.V_s,
+            g_radial_coeffs=self.W_s,
             f_angular_coeffs=self.fs_coeffs.df,
             g_angular_coeffs=self.gs_coeffs.df,
             boundary_only=boundary_only
@@ -750,29 +754,29 @@ class ElasticPolarFarfieldEvaluator:
     
 
     def d2r_Kp(self, boundary_only: bool = False) -> np.ndarray:
-        """Evaluates the 2nd (m)-local radial derivative 
-        of the compressional K_{m,L}^p farfield expansion
-        at each gridpoint of the stored mbar-local grid.
+        """Evaluates the 2nd (mbar)-local radial derivative 
+        of the compressional K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored m-local grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
                 the gridpoints on the physical (i=0) boundary
-                of obstacle mbar's grid. Defaults to False.
+                of obstacle m's grid. Defaults to False.
         
         Returns:
-            np.ndarray: A shape (N_{theta}^{mbar}, N_{r}^{mbar}) array (or
-                shape (N_{theta}^{mbar},) array if on boundary) whose
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
                 [j,i] (or [j], respectively) entry contains the value
-                of the 2nd (m)-local radial derivative of 
+                of the 2nd (mbar)-local radial derivative of 
                 the compressional farfield expansion at the (i,j)
-                mbar-local gridpoint (or (j) mbar-local angular
+                m-local gridpoint (or (j) m-local angular
                 gridpoint):
-                d_{rr}^2 K_{m,L}^p ( r_{mbar}[i], theta_{mbar}[j] )
-                (or d_{rr}^2 K_{m,L}^p ( r_0^{mbar}, theta_{mbar}[j] ) )
+                dr_{mbar}^2 K_{mbar,L}^p ( r_{m}[i], theta_{m}[j] )
+                (or dr_{mbar}^2 K_{mbar,L}^p( r_0^{m}, theta_{m}[j] ) )
         """
         return self._product_sum_coeffs(
-            f_radial_coeffs=self.C_m_p,
-            g_radial_coeffs=self.D_m_p,
+            f_radial_coeffs=self.C_p,
+            g_radial_coeffs=self.D_p,
             f_angular_coeffs=self.fp_coeffs.f,
             g_angular_coeffs=self.gp_coeffs.f,
             boundary_only=boundary_only
@@ -780,29 +784,29 @@ class ElasticPolarFarfieldEvaluator:
 
 
     def d2r_Ks(self, boundary_only: bool = False) -> np.ndarray:
-        """Evaluates the 2nd (m)-local radial derivative 
-        of the shear K_{m,L}^s farfield expansion
-        at each gridpoint of the stored mbar-local grid.
+        """Evaluates the 2nd (mbar)-local radial derivative 
+        of the shear K_{mbar,L}^s farfield expansion
+        at each gridpoint of the stored m-local grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
                 the gridpoints on the physical (i=0) boundary
-                of obstacle mbar's grid. Defaults to False.
+                of obstacle m's grid. Defaults to False.
         
         Returns:
-            np.ndarray: A shape (N_{theta}^{mbar}, N_{r}^{mbar}) array (or
-                shape (N_{theta}^{mbar},) array if on boundary) whose
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
                 [j,i] (or [j], respectively) entry contains the value
-                of the 2nd (m)-local radial derivative of 
+                of the 2nd (mbar)-local radial derivative of 
                 the shear farfield expansion at the (i,j)
-                mbar-local gridpoint (or (j) mbar-local angular
+                m-local gridpoint (or (j) m-local angular
                 gridpoint):
-                d_{rr}^2 K_{m,L}^s ( r_{mbar}[i], theta_{mbar}[j] )
-                (or d_{rr}^2 K_{m,L}^s ( r_0^{mbar}, theta_{mbar}[j] ) )
+                dr_{mbar}^2 K_{mbar,L}^s ( r_{m}[i], theta_{m}[j] )
+                (or dr_{mbar}^2 K_{mbar,L}^s ( r_0^{m}, theta_{m}[j] ) )
         """
         return self._product_sum_coeffs(
-            f_radial_coeffs=self.C_m_s,
-            g_radial_coeffs=self.D_m_s,
+            f_radial_coeffs=self.C_s,
+            g_radial_coeffs=self.D_s,
             f_angular_coeffs=self.fs_coeffs.f,
             g_angular_coeffs=self.gs_coeffs.f,
             boundary_only=boundary_only
@@ -810,29 +814,29 @@ class ElasticPolarFarfieldEvaluator:
     
 
     def d2theta_Kp(self, boundary_only: bool = False) -> np.ndarray:
-        """Evaluates the 2nd (m)-local angular derivative 
-        of the compressional K_{m,L}^p farfield expansion
-        at each gridpoint of the stored mbar-local grid.
+        """Evaluates the 2nd (mbar)-local angular derivative 
+        of the compressional K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored m-local grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
                 the gridpoints on the physical (i=0) boundary
-                of obstacle mbar's grid. Defaults to False.
+                of obstacle m's grid. Defaults to False.
         
         Returns:
-            np.ndarray: A shape (N_{theta}^{mbar}, N_{r}^{mbar}) array (or
-                shape (N_{theta}^{mbar},) array if on boundary) whose
+            np.ndarray: A shape ((N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
                 [j,i] (or [j], respectively) entry contains the value
-                of the 2nd (m)-local angular derivative of 
+                of the 2nd (mbar)-local angular derivative of 
                 the compressional farfield expansion at the (i,j)
-                mbar-local gridpoint (or (j) mbar-local angular
+                m-local gridpoint (or (j) m-local angular
                 gridpoint):
-                d_{theta theta}^2 K_{m,L}^p ( r_{mbar}[i], theta_{mbar}[j] )
-                (or d_{theta theta}^2 K_{m,L}^p ( r_0^{mbar}, theta_{mbar}[j] ) )
+                dtheta_{mbar}^2 K_{mbar,L}^p ( r_{m}[i], theta_{m}[j] )
+                (or dtheta_{mbar}^2 K_{mbar,L}^p( r_0^{m}, theta_{m}[j] ) )
         """
         return self._product_sum_coeffs(
-            f_radial_coeffs=self.V_m_p,
-            g_radial_coeffs=self.W_m_p,
+            f_radial_coeffs=self.V_p,
+            g_radial_coeffs=self.W_p,
             f_angular_coeffs=self.fp_coeffs.d2f,
             g_angular_coeffs=self.gp_coeffs.d2f,
             boundary_only=boundary_only
@@ -840,29 +844,29 @@ class ElasticPolarFarfieldEvaluator:
     
 
     def d2theta_Ks(self, boundary_only: bool = False) -> np.ndarray:
-        """Evaluates the 2nd (m)-local angular derivative 
-        of the shear K_{m,L}^s farfield expansion
-        at each gridpoint of the stored mbar-local grid.
+        """Evaluates the 2nd (mbar)-local angular derivative 
+        of the shear K_{mbar,L}^s farfield expansion
+        at each gridpoint of the stored m-local grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
                 the gridpoints on the physical (i=0) boundary
-                of obstacle mbar's grid. Defaults to False.
+                of obstacle m's grid. Defaults to False.
         
         Returns:
-            np.ndarray: A shape (N_{theta}^{mbar}, N_{r}^{mbar}) array (or
-                shape (N_{theta}^{mbar},) array if on boundary) whose
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
                 [j,i] (or [j], respectively) entry contains the value
-                of the 2nd (m)-local angular derivative of 
+                of the 2nd (mbar)-local angular derivative of 
                 the shear farfield expansion at the (i,j)
-                mbar-local gridpoint (or (j) mbar-local angular
+                m-local gridpoint (or (j) m-local angular
                 gridpoint):
-                d_{theta theta}^2 K_{m,L}^s ( r_{mbar}[i], theta_{mbar}[j] )
-                (or d_{theta theta}^2 K_{m,L}^s ( r_0^{mbar}, theta_{mbar}[j] ) )
+                dtheta_{mbar}^2 K_{mbar,L}^s ( r_{m}[i], theta_{m}[j] )
+                (or dtheta_{mbar}^2 K_{mbar,L}^s ( r_0^{m}, theta_{m}[j] ) )
         """
         return self._product_sum_coeffs(
-            f_radial_coeffs=self.V_m_s,
-            g_radial_coeffs=self.W_m_s,
+            f_radial_coeffs=self.V_s,
+            g_radial_coeffs=self.W_s,
             f_angular_coeffs=self.fs_coeffs.d2f,
             g_angular_coeffs=self.gs_coeffs.d2f,
             boundary_only=boundary_only
@@ -870,29 +874,29 @@ class ElasticPolarFarfieldEvaluator:
     
 
     def dr_dtheta_Kp(self, boundary_only: bool = False) -> np.ndarray:
-        """Evaluates the 2nd mixed (m)-local radial/angular derivative 
-        of the compressional K_{m,L}^p farfield expansion
-        at each gridpoint of the stored mbar-local grid.
+        """Evaluates the 2nd mixed (mbar)-local radial/angular derivative 
+        of the compressional K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored m-local grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
                 the gridpoints on the physical (i=0) boundary
-                of obstacle mbar's grid. Defaults to False.
+                of obstacle m's grid. Defaults to False.
         
         Returns:
-            np.ndarray: A shape (N_{theta}^{mbar}, N_{r}^{mbar}) array (or
-                shape (N_{theta}^{mbar},) array if on boundary) whose
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
                 [j,i] (or [j], respectively) entry contains the value
-                of the 2nd mixed (m)-local radial/angular derivative of 
+                of the 2nd mixed (mbar)-local radial/angular derivative of 
                 the compressional farfield expansion at the (i,j)
-                mbar-local gridpoint (or (j) mbar-local angular
+                m-local gridpoint (or (j) m-local angular
                 gridpoint):
-                d_{r theta}^2 K_{m,L}^p ( r_{mbar}[i], theta_{mbar}[j] )
-                (or d_{r theta}^2 K_{m,L}^p ( r_0^{mbar}, theta_{mbar}[j] ) )
+                dr_{mbar} dtheta_{mbar} K_{mbar,L}^p ( r_{m}[i], theta_{m}[j] )
+                (or dr_{mbar} dtheta_{mbar} K_{mbar,L}^p ( r_0^{m}, theta_{m}[j] ) )
         """
         return self._product_sum_coeffs(
-            f_radial_coeffs=self.A_m_p,
-            g_radial_coeffs=self.B_m_p,
+            f_radial_coeffs=self.A_p,
+            g_radial_coeffs=self.B_p,
             f_angular_coeffs=self.fp_coeffs.df,
             g_angular_coeffs=self.gp_coeffs.df,
             boundary_only=boundary_only
@@ -900,29 +904,29 @@ class ElasticPolarFarfieldEvaluator:
     
 
     def dr_dtheta_Ks(self, boundary_only: bool = False) -> np.ndarray:
-        """Evaluates the 2nd mixed (m)-local radial/angular derivative 
-        of the shear K_{m,L}^s farfield expansion
-        at each gridpoint of the stored mbar-local grid.
+        """Evaluates the 2nd mixed (mbar)-local radial/angular derivative 
+        of the shear K_{mbar,L}^s farfield expansion
+        at each gridpoint of the stored m-local grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
                 the gridpoints on the physical (i=0) boundary
-                of obstacle mbar's grid. Defaults to False.
+                of obstacle m's grid. Defaults to False.
         
         Returns:
-            np.ndarray: A shape (N_{theta}^{mbar}, N_{r}^{mbar}) array (or
-                shape (N_{theta}^{mbar},) array if on boundary) whose
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
                 [j,i] (or [j], respectively) entry contains the value
-                of the 2nd mixed (m)-local radial/angular derivative of 
+                of the 2nd mixed (mbar)-local radial/angular derivative of 
                 the shear farfield expansion at the (i,j)
-                mbar-local gridpoint (or (j) mbar-local angular
+                m-local gridpoint (or (j) m-local angular
                 gridpoint):
-                d_{r theta}^2 K_{m,L}^s ( r_{mbar}[i], theta_{mbar}[j] )
-                (or d_{r theta}^2 K_{m,L}^s ( r_0^{mbar}, theta_{mbar}[j] ) )
+                dr_{mbar} dtheta_{mbar} K_{mbar,L}^s ( r_{m}[i], theta_{m}[j] )
+                (or dr_{mbar} dtheta_{mbar} K_{mbar,L}^s ( r_0^{m}, theta_{m}[j] ) )
         """
         return self._product_sum_coeffs(
-            f_radial_coeffs=self.A_m_s,
-            g_radial_coeffs=self.B_m_s,
+            f_radial_coeffs=self.A_s,
+            g_radial_coeffs=self.B_s,
             f_angular_coeffs=self.fs_coeffs.df,
             g_angular_coeffs=self.gs_coeffs.df,
             boundary_only=boundary_only
@@ -930,8 +934,8 @@ class ElasticPolarFarfieldEvaluator:
     
 
     def potentials(self, boundary_only: bool = True) -> np.ndarray:
-        """Return the interpolated K_{m,L}^p and K_{m,L}^s potentials
-        at each gridpoint of the (mbar)-local grid of interest. 
+        """Return the interpolated K_{mbar,L}^p and K_{mbar,L}^s potentials
+        at each gridpoint of the (m)-local grid of interest. 
 
         Args:
             boundary_only (bool): Whether or not to only return
@@ -942,9 +946,9 @@ class ElasticPolarFarfieldEvaluator:
             np.ndarray: A shape (N_{theta}^{mbar}, N_r^{mbar},  2) (or
                 (N_{theta}^{mbar}, 2) array if boundary_only=True), where
                 the [:,:,0] (or [:,0], respectively) slice carries
-                the K_{m,L}^p potential values, and the 
+                the interpolated K_{mbar,L}^p (phi_{mbar}) potential values, and the 
                 [:,:,1] ([:,1], respectively) slice carries the
-                K_{m,L}^s potential values.
+                interpolated K_{mbar,L}^s (psi_{mbar}) potential values.
         """
         Kp_vals = self.Kp(boundary_only)
         Ks_vals = self.Ks(boundary_only)
@@ -955,9 +959,9 @@ class ElasticPolarFarfieldEvaluator:
         boundary_only: bool = True,
         coordinate_system: CoordinateSystem = CoordinateSystem.LOCAL_POLAR
         ) -> np.ndarray:
-        """Return the (mbar)-local polar displacement caused by 
-        these outgoing potentials/farfield expansions from obstacle m,
-        on the provided (mbar)-local polar grid.
+        """Return the (m)-local polar displacement caused by 
+        the outgoing potentials/farfield expansions from obstacle (mbar),
+        on the provided (m)-local polar grid.
 
         Args:
             boundary_only (bool): Whether or not to only return
@@ -968,67 +972,219 @@ class ElasticPolarFarfieldEvaluator:
             np.ndarray: A shape (N_{theta}^{mbar}, N_r^{mbar},  2) (or
                 (N_{theta}^{mbar}, 2) array if boundary_only=True), where
                 the [:,:,0] (or [:,0], respectively) slice carries
-                the (mbar)-local radial displacement, and the 
+                the obstacle (mbar) radial displacement, and the 
                 [:,:,1] ([:,1], respectively) slice carries the
-                (mbar)-local angular displacement
+                obstacle (mbar) angular displacement
         """
         # Get needed quantities/arrays with correct shapes for grid 
         # (e.g., only at boundary vs. on entire grid of interest)
         if boundary_only:
-            R_m = self.R_m[:,0]                                                 # Shape (N_{theta}^{mbar},)
-            cosine_rotation_m_to_mbar = self.cosine_rotation_m_to_mbar[:,0]     # Shape (N_{theta}^{mbar},)
-            sine_rotation_m_to_mbar = self.sine_rotation_m_to_mbar[:,0]         # Shape (N_{theta}^{mbar},)
-            cosine_rotation_m_to_global = self.cosine_rotation_m_to_global[:,0] # Shape (N_{theta}^{mbar},)
-            sine_rotation_m_to_global = self.sine_rotation_m_to_global[:,0]     # Shape (N_{theta}^{mbar},)
-            cos_mbar = self.cos_mbar[:,0]                                       # "" "" ""
-            sin_mbar = self.sin_mbar[:,0]                                       # "" "" ""
-            cos_global = self.cos_global[:,0]                                   # "" "" ""
-            sin_global = self.sin_global[:,0]                                   # "" "" ""
+            # Shape (N_{theta}^{m}, ) arrays - only on obstacle m physical boundary grid
+            R_m = self.R_mbar[:,0]                                                 
+            cosine_rotation_mbar_to_m = self.cosine_rotation_mbar_to_m[:,0]
+            sine_rotation_mbar_to_m = self.sine_rotation_mbar_to_m[:,0]
+            cosine_rotation_mbar_to_global = self.cosine_rotation_mbar_to_global[:,0]
+            sine_rotation_mbar_to_global = self.sine_rotation_mbar_to_global[:,0]
+            cos_m = self.cos_m[:,0]
+            sin_m = self.sin_m[:,0]
         else:
-            R_m = self.R_m                                                      # Shape (N_{theta}^{mbar}, N_r^{mbar})
-            cosine_rotation_m_to_mbar = self.cosine_rotation_m_to_mbar          # Shape (N_{theta}^{mbar}, N_r^{mbar})
-            sine_rotation_m_to_mbar = self.sine_rotation_m_to_mbar              # Shape (N_{theta}^{mbar}, N_r^{mbar})
-            cosine_rotation_m_to_global = self.cosine_rotation_m_to_global      # Shape (N_{theta}^{mbar}, N_r^{mbar})
-            sine_rotation_m_to_global = self.sine_rotation_m_to_global          # Shape (N_{theta}^{mbar}, N_r^{mbar})
-            cos_mbar = self.cos_mbar                                            # "" "" ""
-            sin_mbar = self.sin_mbar                                            # "" "" ""
-            cos_global = self.cos_global                                        # "" "" ""
-            sin_global = self.sin_global                                        # "" "" ""
+            # Shape (N_{theta}^{m}, N_r^{m}) arrays - on obstacle m's full grid 
+            R_m = self.R_mbar                                                      
+            cosine_rotation_mbar_to_m = self.cosine_rotation_mbar_to_m
+            sine_rotation_mbar_to_m = self.sine_rotation_mbar_to_m
+            cosine_rotation_mbar_to_global = self.cosine_rotation_mbar_to_global
+            sine_rotation_mbar_to_global = self.sine_rotation_mbar_to_global
+            cos_m = self.cos_m
+            sin_m = self.sin_m
         
+        # Evaluate farfield derivatives needed for (mbar)-local displacement
+        # (that is, displacement before rotation into m-local coords)
+        dr_mbar_Kp = self.dr_Kp(boundary_only)
+        dr_mbar_Ks = self.dr_Ks(boundary_only)
+        dtheta_mbar_Kp = self.dtheta_Kp(boundary_only)
+        dtheta_mbar_Ks = self.dtheta_Ks(boundary_only)
+
+        # Evaluate (mbar)-local displacement (before rotation into m-local coords)
+        u_r_mbar = dr_mbar_Kp + dtheta_mbar_Ks/R_m
+        u_theta_mbar = dtheta_mbar_Kp/R_m - dr_mbar_Ks
+        
+        # ------------------ m-Local Polar Displacement ------------------
+        # Get m-local polar displacement from (m)-local polar displacement
+        # using rotation matrix entries for mbar -> m
+        u_r_m = cosine_rotation_mbar_to_m * u_r_mbar - sine_rotation_mbar_to_m * u_theta_mbar
+        u_theta_m = sine_rotation_mbar_to_m * u_r_mbar + cosine_rotation_mbar_to_m * u_theta_mbar 
+        if coordinate_system is CoordinateSystem.LOCAL_POLAR:
+            return np.stack((u_r_m, u_theta_m), axis=-1)      # Shape (N_{theta}^{m}, N_r^{m}, 2)
+        
+        # ------------------ Global Polar Displacement ------------------
+        # Get global polar displacement from (mbar)-local polar displacement
+        # using rotation matrix entries from mbar -> global
+        u_r_global = cosine_rotation_mbar_to_global * u_r_mbar - sine_rotation_mbar_to_global * u_theta_mbar 
+        u_theta_global = sine_rotation_mbar_to_global * u_r_mbar + cosine_rotation_mbar_to_global * u_theta_mbar
+        if coordinate_system is CoordinateSystem.GLOBAL_POLAR:
+            return np.stack((u_r_global, u_theta_global), axis=-1)  # Shape (N_{theta}^{m}, N_r^{m}, 2)
+        
+        # ------------------ Cartesian Displacement ------------------
+        # Get cartesian displacement from
+        # m-local polar displacement using definition 
+        # of m-local polar unit vectors (r_m)_hat and (theta_m)_hat
+        u_x_m = u_r_m * cos_m - u_theta_m * sin_m
+        u_y_m = u_r_m * sin_m + u_theta_m * cos_m
+        if coordinate_system is CoordinateSystem.LOCAL_CARTESIAN or coordinate_system is CoordinateSystem.GLOBAL_CARTESIAN:       # Cartesian coordinate displacmeents are translation invariant
+            return np.stack((u_x_m, u_y_m), axis=-1)          # Shape (N_{theta}^{m}, N_r^{m}, 2)
+        
+
+    def stress(
+        self,
+        boundary_only: bool = True,
+        coordinate_system: CoordinateSystem = CoordinateSystem.LOCAL_POLAR
+    ) -> np.ndarray:
+        """Return the (mbar)-local polar stresses caused by 
+        these outgoing potentials/farfield expansions from obstacle m,
+        on the provided (mbar)-local polar grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle mbar's grid. Defaults to False.
+
+        Returns:
+            np.ndarray: A shape (N_{theta}^{m}, N_r^{m},  3) (or
+                (N_{theta}^{m}, 3) array if boundary_only=True), where
+                the [:,:,0] (or [:,0], respectively) slice carries
+                the obstacle (mbar) radial stress sigma_{r,r} (sigma_{xx}), 
+                the [:,:,1] ([:,1], respectively) slice carries the
+                obstacle (mbar) r-theta stress sigma_{r theta} (sigma_{xy}), 
+                and the [:,:,2] ([:,2], respectively) slice carries the
+                obstale (mbar) theta-theta stress sigma_{theta theta} (sigma_{yy})
+        """
+        # Get needed quantities/arrays with correct shapes for grid 
+        # (e.g., only at boundary vs. on entire grid of interest)
+        if boundary_only:
+            # Shape (N_{theta}^{m}, ) arrays - only on obstacle m physical boundary grid
+            R_mbar = self.R_mbar[:,0]
+            cosine_rotation_mbar_to_m = self.cosine_rotation_mbar_to_m[:,0]
+            sine_rotation_mbar_to_m = self.sine_rotation_mbar_to_m[:,0]
+            cosine_rotation_mbar_to_global = self.cosine_rotation_mbar_to_global[:,0]
+            sine_rotation_mbar_to_global = self.sine_rotation_mbar_to_global[:,0]
+            cos_mbar = self.cos_mbar[:,0]
+            sin_mbar = self.sin_mbar[:,0]
+        else:
+            # Shape (N_{theta}^{m}, N_r^{m}) arrays - on obstacle m's full grid 
+            R_mbar = self.R_mbar                                                      
+            cosine_rotation_mbar_to_m = self.cosine_rotation_mbar_to_m
+            sine_rotation_mbar_to_m = self.sine_rotation_mbar_to_m
+            cosine_rotation_mbar_to_global = self.cosine_rotation_mbar_to_global
+            sine_rotation_mbar_to_global = self.sine_rotation_mbar_to_global
+            cos_mbar = self.cos_mbar
+            sin_mbar = self.sin_mbar
+
         # Evaluate farfield derivatives needed for m-local displacement
         # before rotation 
-        dr_m_Kp = self.dr_Kp(boundary_only)
-        dr_m_Ks = self.dr_Ks(boundary_only)
-        dtheta_m_Kp = self.dtheta_Kp(boundary_only)
-        dtheta_m_Ks = self.dtheta_Ks(boundary_only)
+        dr_mbar_Kp = self.dr_Kp(boundary_only)
+        dr_mbar_Ks = self.dr_Ks(boundary_only)
+    
+        dtheta_mbar_Kp = self.dtheta_Kp(boundary_only)
+        dtheta_mbar_Ks = self.dtheta_Ks(boundary_only)
 
-        # Evaluate m-local displacement before rotation
-        u_r_m = dr_m_Kp + dtheta_m_Ks/R_m
-        u_theta_m = dtheta_m_Kp/R_m - dr_m_Ks
+        d2_rr_mbar_Kp = self.d2r_Kp(boundary_only)
+        d2_rr_mbar_Ks = self.d2r_Ks(boundary_only)
+
+        d2_thetatheta_mbar_Kp = self.d2theta_Kp(boundary_only)
+        d2_thetatheta_mbar_Ks = self.d2theta_Ks(boundary_only)
+
+        d2_rtheta_mbar_Kp = self.dr_dtheta_Kp(boundary_only)
+        d2_rtheta_mbar_Ks = self.dr_dtheta_Ks(boundary_only)
+
+        # Evaluate mbar-local stresses before rotation
+        sigma_rr_mbar = (
+            (self.lam + 2*self.mu) * d2_rr_mbar_Kp
+            + self.lam * (
+                dr_mbar_Kp / R_mbar + d2_thetatheta_mbar_Kp / (R_mbar**2)
+            ) + (2 * self.mu) * (
+                -dtheta_mbar_Ks / (R_mbar**2) + d2_rtheta_mbar_Ks / R_mbar
+            )
+        )
+        sigma_rtheta_mbar = (
+            (2 * self.mu) * (
+                d2_rtheta_mbar_Kp / R_mbar - dtheta_mbar_Kp / R_mbar
+            ) + self.mu * (
+                d2_thetatheta_mbar_Ks / (R_mbar**2) + dr_mbar_Ks / (R_mbar) - d2_rr_mbar_Ks
+            )
+        )
+        sigma_thetatheta_mbar = (
+            (self.lam + 2 * self.mu) * (
+                dr_mbar_Kp / R_mbar + d2_thetatheta_mbar_Kp / (R_mbar**2)
+            ) + self.lam * (
+                d2_rr_mbar_Kp 
+            )
+            + (2 * self.mu) * (
+                dtheta_mbar_Ks / (R_mbar**2) - d2_rtheta_mbar_Ks / R_mbar
+            )
+        )
         
-        # Get (mbar)-local polar displacement from (m)-local polar displacement
-        # using rotation matrix entries for m -> mbar
-        u_r_mbar = cosine_rotation_m_to_mbar * u_r_m - sine_rotation_m_to_mbar * u_theta_m
-        u_theta_mbar = sine_rotation_m_to_mbar * u_r_m + cosine_rotation_m_to_mbar * u_theta_m 
+        # Get (m)-local polar stresses from (mbar)-local polar stresses
+        # using rotation matrix entries for R^{mbar -> m}:
+        # 
+        # 2nd-Order Stress Tensor Rotation must rotate both plane and vectors in each plane
+        # (that is, think of it as a change of basis for the entire space):
+        # sigma_{m} = (R^{mbar -> m}) (sigma_{mbar}) (R^{m -> mbar})
+        #           = R^{mbar -> m} (sigma_{mbar}) (R^{mbar -> m})^T
+        sigma_rr_m = (
+            sigma_rr_mbar * cosine_rotation_mbar_to_m**2 
+            - 2 * sigma_rtheta_mbar * sine_rotation_mbar_to_m * cosine_rotation_mbar_to_m 
+            + sigma_thetatheta_mbar * sine_rotation_mbar_to_m**2
+        )
+        sigma_rtheta_m = (
+            sigma_rtheta_mbar * (cosine_rotation_mbar_to_m**2 - sine_rotation_mbar_to_m**2)
+            + (sigma_rr_mbar - sigma_thetatheta_mbar) * sine_rotation_mbar_to_m * cosine_rotation_mbar_to_m
+        )
+        sigma_thetatheta_m = (
+            sigma_rr_mbar * sine_rotation_mbar_to_m**2 
+            + 2 * sigma_rtheta_mbar * sine_rotation_mbar_to_m * cosine_rotation_mbar_to_m 
+            + sigma_thetatheta_mbar * cosine_rotation_mbar_to_m**2
+        )
         if coordinate_system is CoordinateSystem.LOCAL_POLAR:
-            return np.stack((u_r_mbar, u_theta_mbar), axis=-1)      # Shape (N_{theta}^{mbar}, N_r^{mbar}, 2)
+            return np.stack((sigma_rr_m, sigma_rtheta_m, sigma_thetatheta_m), axis=-1)   
+
         
-        # Get global polar displacement from (m)-local polar displacement
-        # using rotation matrix entries from m -> global
-        u_r_global = cosine_rotation_m_to_global * u_r_m - sine_rotation_m_to_global * u_theta_m 
-        u_theta_global = sine_rotation_m_to_global * u_r_m + cosine_rotation_m_to_global * u_theta_m
+        # Get global polar displacement from (mbar)-local polar displacement
+        # using rotation matrix entries from R^{mbar -> global}
+        sigma_rr_global = (
+            sigma_rr_mbar * cosine_rotation_mbar_to_global**2 
+            - 2 * sigma_rtheta_mbar * sine_rotation_mbar_to_global * cosine_rotation_mbar_to_global 
+            + sigma_thetatheta_mbar * sine_rotation_mbar_to_global**2
+        )
+        sigma_rtheta_global = (
+            sigma_rtheta_mbar * (cosine_rotation_mbar_to_global**2 - sine_rotation_mbar_to_global**2)
+            + (sigma_rr_mbar - sigma_thetatheta_mbar) * sine_rotation_mbar_to_global * cosine_rotation_mbar_to_global
+        )
+        sigma_thetatheta_global = (
+            sigma_rr_mbar * sine_rotation_mbar_to_global**2 
+            + 2 * sigma_rtheta_mbar * sine_rotation_mbar_to_global * cosine_rotation_mbar_to_global
+            + sigma_thetatheta_mbar * cosine_rotation_mbar_to_global**2
+        )
+        if coordinate_system is CoordinateSystem.LOCAL_POLAR:
+            return np.stack((sigma_rr_m, sigma_rtheta_m, sigma_thetatheta_m), axis=-1)
         if coordinate_system is CoordinateSystem.GLOBAL_POLAR:
-            return np.stack((u_r_global, u_theta_global), axis=-1)  # Shape (N_{theta}^{mbar}, N_r^{mbar}, 2)
+            return np.stack((sigma_rr_global, sigma_rtheta_global, sigma_thetatheta_global), axis=-1)  # Shape (N_{theta}^{mbar}, N_r^{mbar}, 2)
         
-        # Get cartesian displacement from
-        # (mbar)-local polar displacement using definition 
-        # of mbar-local polar unit vectors (r_m)_hat and (theta_m)_hat
-        u_x_mbar = u_r_mbar * cos_mbar - u_theta_mbar * sin_mbar
-        u_y_mbar = u_r_mbar * sin_mbar + u_theta_mbar * cos_mbar
+        # Get cartesian displacement from mbar-local polar displacement 
+        # using a nice stress-strain derivation converting stresses
+        # from polar to cartesian.
+        sigma_xx = (
+            sigma_rr_mbar * cos_mbar**2 
+            + sigma_thetatheta_mbar * sin_mbar**2
+            - 2 * sigma_rtheta_mbar * sin_mbar * cos_mbar
+        )
+        sigma_xy = (
+            (sigma_rr_mbar - sigma_thetatheta_mbar) * sin_mbar * cos_mbar 
+            + sigma_rtheta_mbar * (cos_mbar**2 - sin_mbar**2)
+        )
+        sigma_yy = (
+            sigma_rr_mbar * sin_mbar**2 
+            + sigma_thetatheta_mbar * cos_mbar**2
+            + 2 * sigma_rtheta_mbar * sin_mbar * cos_mbar
+        )
         if coordinate_system is CoordinateSystem.LOCAL_CARTESIAN or coordinate_system is CoordinateSystem.GLOBAL_CARTESIAN:       # Cartesian coordinate displacmeents are translation invariant
-            return np.stack((u_x_mbar, u_y_mbar), axis=-1)          # Shape (N_{theta}^{mbar}, N_r^{mbar}, 2)
-
-
-        
-        
-
+            return np.stack((sigma_xx, sigma_xy, sigma_yy), axis=-1)  
