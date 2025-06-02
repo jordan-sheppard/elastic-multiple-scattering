@@ -1410,10 +1410,10 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         
         # Evaluate incident wave displacmenet in this local coordinate system
         uinc_evaluator = self.incident_evaluators[incident_wave.id]
-        incident_wave_displacement = uinc_evaluator.displacement(boundary_only=True)
-        displacement_local_r = incident_wave_displacement[:,0]
-        displacement_local_theta = incident_wave_displacement[:,1]
-        return displacement_local_r, displacement_local_theta
+        incident_wave_stress_local = uinc_evaluator.stress(boundary_only=True)
+        stress_rr_local = incident_wave_stress_local[:,0]
+        stress_rtheta_local = incident_wave_stress_local[:,1]
+        return stress_rr_local, stress_rtheta_local
 
     def _get_other_obstacle_stress_data(
         self,
@@ -1512,11 +1512,11 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         stress_local_rr = np.zeros(self.grid.num_angular_gridpoints, dtype='complex128')
         stress_local_rtheta = np.zeros(self.grid.num_angular_gridpoints, dtype='complex128')
 
-        ## Process incident wave data
+        ## Process incident wave stress data
         if incident_wave is not None:
-            inc_wave_displacement = self._get_incident_wave_displacement_data(incident_wave)
-            displacement_local_r += inc_wave_displacement[0]
-            displacement_local_theta += inc_wave_displacement[1]
+            incident_stress = self._get_incident_wave_stress_data(incident_wave)
+            stress_local_rr += incident_stress[0]
+            stress_local_rtheta += incident_stress[1]
         
         ## Process other obstacle incoming wave data
         # Get other obstacle influences on this obstacle using Karp expansions
@@ -1535,9 +1535,11 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         # Get physical BC data for first 2*N_{theta} entries
         if self.bc is BoundaryCondition.HARD:
             physical_bc_data = self.hard_bc_forcing_vector(obstacles, incident_wave)
-        else:
+        elif self.bc is BoundaryCondition.SOFT:
             physical_bc_data = self.soft_bc_forcing_vector(obstacles, incident_wave)
-
+        else:
+            raise ValueError("Error: Unknown boundary condition. Cannot construct forcing vector.")
+    
         # Get rest of forcing vector data 
         other_forcing_data = np.zeros(self.num_unknowns - 2*self.num_angular_gridpoints)
         
