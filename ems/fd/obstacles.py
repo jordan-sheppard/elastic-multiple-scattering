@@ -1603,22 +1603,22 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         dtheta = self.grid.dtheta
         dr = self.grid.dr
         lam = self.parent_medium.lam 
-        mu = self.parent_medium.mu  
+        mu = self.parent_medium.mu
+        kp = self.parent_medium.kp  
 
         # Create FD submatrix entries
-        a = (lam + 2*mu) / (dr**2)
-        b = lam / (2 * r0 * dr)
-        c = lam / (r0**2 * dtheta**2)
-        d = mu / (r0**2 * dtheta)
-        h = mu / (2 * r0 * dr * dtheta)
+        a = 2 * mu / (dr**2)
+        b = mu / (r0**2 * dtheta)
+        c = mu / (2 * r0 * dr * dtheta)
         p = mu / (dr**2)
         q = mu / (r0**2 * dtheta**2)
         s = mu / (2 * r0 * dr)
 
+
         ## Create FD submatrices
         # sigma_rr submatrices 
         A_rr_p_0 = (
-            (a-b) * sparse.eye_array(
+            a * sparse.eye_array(
                 self.num_angular_gridpoints,
                 format='csc'
             )
@@ -1626,23 +1626,23 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         A_rr_s_0 = (
             sparse_periodic_tridiag(
                 self.num_angular_gridpoints,
-                0., h, -h
+                0., c, -c
             )
         )
         A_rr_p_1 = (
-            sparse_periodic_tridiag(
+            (-lam * kp**2 - 2*a) * sparse.eye_array(
                 self.num_angular_gridpoints,
-                -2*(a+c), c, c
+                format='csc'
             )
         )
         A_rr_s_1 = (
             sparse_periodic_tridiag(
                 self.num_angular_gridpoints,
-                0., d, -d
+                0., b, -b
             )
         )
         A_rr_p_2 = (
-            (a+b) * sparse.eye_array(
+            a * sparse.eye_array(
                 self.num_angular_gridpoints,
                 format='csc'
             )
@@ -1650,7 +1650,7 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         A_rr_s_2 = (
             sparse_periodic_tridiag(
                 self.num_angular_gridpoints,
-                0., -h, h
+                0., -c, c
             )
         )
 
@@ -1658,7 +1658,7 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         A_rtheta_p_0 = (
             sparse_periodic_tridiag(
                 self.num_angular_gridpoints,
-                0., h, -h
+                0., c, -c
             )
         ) 
         A_rtheta_s_0 = (
@@ -1670,7 +1670,7 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         A_rtheta_p_1 = (
             sparse_periodic_tridiag(
                 self.num_angular_gridpoints,
-                0., d, -d
+                0., b, -b
             )
         ) 
         A_rtheta_s_1 = (
@@ -1682,11 +1682,11 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         A_rtheta_p_2 = (
             sparse_periodic_tridiag(
                 self.num_angular_gridpoints,
-                0., -h, h
+                0., -c, c
             )
         )
         A_rtheta_s_2 = (
-            (-p-s) * sparse.eye_array(
+            (-p+s) * sparse.eye_array(
                 self.num_angular_gridpoints,
                 format='csc'
             )

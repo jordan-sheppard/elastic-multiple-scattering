@@ -211,14 +211,14 @@ class IncidentPlanePWaveEvaluator:
         mu = self.mu
       
         # Get local polar stress representation 
-        sigma_rr_inc_local = k**2 * (
-            -lam - mu - (mu * cosine_local_doubled)
+        sigma_rr_inc_local = -k**2 * (
+            lam + mu + (mu * cosine_local_doubled)
         ) * phi_inc 
         sigma_rtheta_inc_local = k**2 * (
             mu * sine_local_doubled  
         ) * phi_inc 
-        sigma_thetatheta_inc_local = k**2 * (
-            -lam - mu + (mu * cosine_local_doubled)
+        sigma_thetatheta_inc_local = -k**2 * (
+            lam + mu - (mu * cosine_local_doubled)
         ) * phi_inc 
         if coordinate_system is CoordinateSystem.LOCAL_POLAR:
             return np.stack((sigma_rr_inc_local, sigma_rtheta_inc_local, sigma_thetatheta_inc_local), axis=-1)    # Shape (N_{theta}^m, N_r^m, 2)

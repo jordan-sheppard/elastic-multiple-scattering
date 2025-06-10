@@ -151,7 +151,7 @@ def exact_solution_soft(
             - alpha * r0 * hankel1(n-1, alpha*r0)
         )
         E3_12 = (
-            -n * (n-1) * hankel1(n, beta*r0)
+            -n * (n+1) * hankel1(n, beta*r0)
             + n * beta * r0 * hankel1(n-1, beta * r0)
         )
         E1_41 = (
