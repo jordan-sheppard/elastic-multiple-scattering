@@ -1081,6 +1081,8 @@ class ElasticPolarFarfieldEvaluator:
 
         # Evaluate farfield derivatives needed for m-local displacement
         # before rotation 
+        Kp = self.Kp(boundary_only)
+
         dr_mbar_Kp = self.dr_Kp(boundary_only)
         dr_mbar_Ks = self.dr_Ks(boundary_only)
     
@@ -1098,9 +1100,9 @@ class ElasticPolarFarfieldEvaluator:
 
         # Evaluate mbar-local stresses before rotation
         sigma_rr_mbar = (
-            (self.lam + 2*self.mu) * d2_rr_mbar_Kp
-            + self.lam * (
-                dr_mbar_Kp / R_mbar + d2_thetatheta_mbar_Kp / (R_mbar**2)
+            (-self.lam * self.kp) * Kp
+            + (2 * self.mu) * (
+                d2_rr_mbar_Kp
             ) + (2 * self.mu) * (
                 -dtheta_mbar_Ks / (R_mbar**2) + d2_rtheta_mbar_Ks / R_mbar
             )
@@ -1113,10 +1115,9 @@ class ElasticPolarFarfieldEvaluator:
             )
         )
         sigma_thetatheta_mbar = (
-            (self.lam + 2 * self.mu) * (
+            (-self.lam * self.kp) * Kp
+            + (2 * self.mu) * (
                 dr_mbar_Kp / R_mbar + d2_thetatheta_mbar_Kp / (R_mbar**2)
-            ) + self.lam * (
-                d2_rr_mbar_Kp 
             )
             + (2 * self.mu) * (
                 dtheta_mbar_Ks / (R_mbar**2) - d2_rtheta_mbar_Ks / R_mbar
