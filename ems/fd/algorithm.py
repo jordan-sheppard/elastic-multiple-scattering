@@ -4,6 +4,7 @@ import json
 import logging
 import cloudpickle
 from matplotlib import pyplot as plt
+from matplotlib.contour import QuadContourSet
 from scipy.interpolate import RegularGridInterpolator
 from tabulate import tabulate
 import sys  
@@ -18,7 +19,7 @@ from ..base.waves import IncidentPlanePWave
 from ..base.exceptions import (
     MaxIterationsExceedException, AlgorithmDivergedException
 )
-from ..base.consts import Algorithm, ErrorType
+from ..base.consts import Algorithm, ErrorType, PotentialType, ComplexArrayQuantity, PlotType 
 from ..base.obstacles import BaseObstacle
 from ..base.text_parsing import get_full_configuration_filename_base, get_filename_base
 from .grids import FDPolarGrid_ArtBndry, FDLocalPolarGrid
@@ -960,63 +961,263 @@ class MKFE_FD_ScatteringProblem:
         return self.convergence_analyzer
 
 
-    def plot_total_phi(self, PPW: int, plot_folder: Optional[str] = None):
+    def plot_scalar_field_at_obstacles(
+        self,
+        PPW: int,
+        field_vals: list[np.ndarray],
+        vmin: float,
+        vmax:float,
+        title: str,
+        plot_folder:Optional[str] = None,
+        plot_filename: Optional[str] = None
+    ) -> None:
+        for obstacle, vals in zip(self.obstacles[PPW], field_vals):
+            # Plot field values
+            quad_contour_set = obstacle.plot_contourf(vals, vmin=vmin, vmax=vmax)
+
+         # Title and show the plot
+        plt.title(title)
+        plt.colorbar(quad_contour_set)
+        if plot_folder is None:
+            plt.show()
+        else:
+            plot_img_path = os.path.join(plot_folder, plot_filename)
+            plt.savefig(plot_img_path)
+            plt.clf()
+    
+
+    def get_potentials_for_plotting(
+        self, 
+        PPW: int,
+        potential_type: PotentialType,
+        complex_array_quantity: ComplexArrayQuantity,
+        plot_type: PlotType
+    ) -> tuple[list[np.ndarray], float, float]:
+        """Gets the desired potential (in absolute value, real,
+        or imaginary form), either scattered or total, at each
+        obstacle. Factors in contributions from all participating
+        obstacles.
+        
+        Returns:
+            list[np.ndarray] - The i'th entry is an array of quantities
+                as the same shape of the obstacle local grid 
+                at self.obstacles[PPW][i]
+            float - The absolute minimum value encountered 
+            float - The absolute maximum value encountered
+        """
+        vmin = np.inf 
+        vmax = -np.inf 
+        values_at_obstacles = []
+        for obstacle in self.obstacles[PPW]:
+            # Get other obstacle information 
+            other_obstacles = []
+            for other_obstacle in self.obstacles[PPW]:
+                if other_obstacle.id != obstacle.id:
+                    other_obstacles.append(other_obstacle)
+
+            # If total wave desired, get effect of incident wave.
+            # Otherwise, ignore it
+            if plot_type is PlotType.SCATTERED:
+                u_inc = None 
+            elif plot_type is PlotType.TOTAL:
+                u_inc = self.incident_wave
+            else:
+                raise ValueError(f"Unrecognized Plot Type {plot_type}")
+
+            # Get desired potential (phi or psi)
+            if potential_type is PotentialType.PHI:
+                vals = obstacle.get_total_phi(
+                    u_inc=u_inc,
+                    other_obstacles=other_obstacles
+                )
+            elif potential_type is PotentialType.PSI:
+                vals = obstacle.get_total_psi(
+                    u_inc=u_inc,
+                    other_obstacles=other_obstacles
+                )
+            else:
+                raise ValueError(f"Unrecognized Potential Type {potential_type}")
+            
+            # Parse desired complex potential into real scalar 
+            # according to given method 
+            if complex_array_quantity is ComplexArrayQuantity.ABS:
+                vals = np.abs(vals)
+            elif complex_array_quantity is ComplexArrayQuantity.REAL:
+                vals = np.real(vals)
+            elif complex_array_quantity is ComplexArrayQuantity.IMAGINARY:
+                vals = np.imag(vals)
+            else:
+                raise ValueError(f"Unrecognized Complex Array Quantity {ComplexArrayQuantity}")
+            
+            # Update absolute max/min by inspecting max/min of these values 
+            vmax = np.max([vmax, np.max(vals)])
+            vmin = np.min([vmin, np.min(vals)])
+
+            # Store values to return at this obstacle 
+            values_at_obstacles.append(vals)
+        return values_at_obstacles, vmin, vmax
+
+
+    def plot_total_phi(
+        self,
+        PPW: int,
+        complex_array_quantity:ComplexArrayQuantity,
+        plot_folder: Optional[str] = None
+    ):
         """Plot total phi for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
-        for obstacle in self.obstacles[PPW]:
-            # Get other obstacle information 
-            other_obstacles = []
-            for other_obstacle in self.obstacles[PPW]:
-                if other_obstacle.id != obstacle.id:
-                    other_obstacles.append(other_obstacle)
-            
-            # Plot
-            obstacle.plot_phi_contourf(
-                u_inc=self.incident_wave,
-                other_obstacles=other_obstacles
-            )
-        
-        # Show/save plot
-        plt.title(f"Total $\phi$ (PPW = {PPW})")
-        plt.colorbar()
-        if plot_folder is None:
-            plt.show()
-        else:
-            plot_img_path = os.path.join(plot_folder, "phi_total_contour.png")
-            plt.savefig(plot_img_path)
-            plt.clf()
+        # Get total phi at each obstacle
+        total_potentials, vmin, vmax = self.get_potentials_for_plotting(
+            PPW, 
+            potential_type=PotentialType.PHI,
+            complex_array_quantity=complex_array_quantity,
+            plot_type=PlotType.TOTAL
+        )
 
-    def plot_total_psi(self, PPW: int, plot_folder: Optional[str] = None):
-        """Plot total psi for a given PPW solution."""
+        # Plot the contourf plot of the total phi at each obstacle
+        # using uniform color scaling
+        if complex_array_quantity is ComplexArrayQuantity.ABS:
+            title = r'Total $\phi$ (Amplitude)'
+            plot_filename = 'phi_total_amplitude_contour.png'
+        elif complex_array_quantity is ComplexArrayQuantity.REAL:
+            title = r'Total $\phi$ (Real Part)'
+            plot_filename = 'phi_total_real_contour.png'
+        elif complex_array_quantity is ComplexArrayQuantity.IMAGINARY:
+            title = r'Total $\phi$ (Imaginary Part)'
+            plot_filename = 'phi_total_imaginary_contour.png'
+        
+        self.plot_scalar_field_at_obstacles(
+            PPW=PPW,
+            field_vals=total_potentials,
+            vmin=vmin,
+            vmax=vmax,
+            title=title,
+            plot_folder=plot_folder,
+            plot_filename=plot_filename
+        )
+
+    def plot_scattered_phi(
+        self,
+        PPW: int,
+        complex_array_quantity:ComplexArrayQuantity,
+        plot_folder: Optional[str] = None
+    ):
+        """Plot scattered phi for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
-        for obstacle in self.obstacles[PPW]:
-            # Get other obstacle information 
-            other_obstacles = []
-            for other_obstacle in self.obstacles[PPW]:
-                if other_obstacle.id != obstacle.id:
-                    other_obstacles.append(other_obstacle)
-            
-            # Plot
-            obstacle.plot_psi_contourf(
-                u_inc=self.incident_wave,
-                other_obstacles=other_obstacles
-            )
+        # Get scattered phi at each obstacle
+        total_potentials, vmin, vmax = self.get_potentials_for_plotting(
+            PPW, 
+            potential_type=PotentialType.PHI,
+            complex_array_quantity=complex_array_quantity,
+            plot_type=PlotType.SCATTERED
+        )
 
-        # Display plot
-        plt.title(f"Total $\psi$ (PPW = {PPW})")
-        plt.colorbar()
-        if plot_folder is None:
-            plt.show()
-        else:
-            plot_img_path = os.path.join(plot_folder, "psi_total_contour.png")
-            plt.savefig(plot_img_path)
-            plt.clf()
+        # Plot the contourf plot of the scattered phi at each obstacle
+        # using uniform color scaling
+        if complex_array_quantity is ComplexArrayQuantity.ABS:
+            title = r'Scattered $\phi$ (Amplitude)'
+            plot_filename = 'phi_scattered_amplitude_contour.png'
+        elif complex_array_quantity is ComplexArrayQuantity.REAL:
+            title = r'Scattered $\phi$ (Real Part)'
+            plot_filename = 'phi_scattered_real_contour.png'
+        elif complex_array_quantity is ComplexArrayQuantity.IMAGINARY:
+            title = r'Scattered $\phi$ (Imaginary Part)'
+            plot_filename = 'phi_scattered_imaginary_contour.png'
+        
+        self.plot_scalar_field_at_obstacles(
+            PPW=PPW,
+            field_vals=total_potentials,
+            vmin=vmin,
+            vmax=vmax,
+            title=title,
+            plot_folder=plot_folder,
+            plot_filename=plot_filename
+        )
 
+    def plot_total_psi(
+        self,
+        PPW: int,
+        complex_array_quantity:ComplexArrayQuantity,
+        plot_folder: Optional[str] = None
+    ):
+        """Plot total phi for a given PPW solution."""
+        if PPW not in self.obstacles:
+            raise ValueError(f"Error: No solution exists for PPW={PPW}")
+        
+        # Get total psi at each obstacle
+        total_potentials, vmin, vmax = self.get_potentials_for_plotting(
+            PPW, 
+            potential_type=PotentialType.PSI,
+            complex_array_quantity=complex_array_quantity,
+            plot_type=PlotType.TOTAL
+        )
 
+        # Plot the contourf plot of the total psi at each obstacle
+        # using uniform color scaling
+        if complex_array_quantity is ComplexArrayQuantity.ABS:
+            title = r'Total $\psi$ (Amplitude)'
+            plot_filename = 'psi_total_amplitude_contour.png'
+        elif complex_array_quantity is ComplexArrayQuantity.REAL:
+            title = r'Total $\psi$ (Real Part)'
+            plot_filename = 'psi_total_real_contour.png'
+        elif complex_array_quantity is ComplexArrayQuantity.IMAGINARY:
+            title = r'Total $\psi$ (Imaginary Part)'
+            plot_filename = 'psi_total_imaginary_contour.png'
+        
+        self.plot_scalar_field_at_obstacles(
+            PPW=PPW,
+            field_vals=total_potentials,
+            vmin=vmin,
+            vmax=vmax,
+            title=title,
+            plot_folder=plot_folder,
+            plot_filename=plot_filename
+        )
+
+    def plot_scattered_psi(
+        self,
+        PPW: int,
+        complex_array_quantity:ComplexArrayQuantity,
+        plot_folder: Optional[str] = None
+    ):
+        """Plot scattered psi for a given PPW solution."""
+        if PPW not in self.obstacles:
+            raise ValueError(f"Error: No solution exists for PPW={PPW}")
+        
+        # Get scattered psi at each obstacle
+        total_potentials, vmin, vmax = self.get_potentials_for_plotting(
+            PPW, 
+            potential_type=PotentialType.PSI,
+            complex_array_quantity=complex_array_quantity,
+            plot_type=PlotType.SCATTERED
+        )
+
+        # Plot the contourf plot of the scattered psi at each obstacle
+        # using uniform color scaling
+        if complex_array_quantity is ComplexArrayQuantity.ABS:
+            title = r'Scattered $\psi$ (Amplitude)'
+            plot_filename = 'psi_scattered_amplitude_contour.png'
+        elif complex_array_quantity is ComplexArrayQuantity.REAL:
+            title = r'Scattered $\psi$ (Real Part)'
+            plot_filename = 'psi_scattered_real_contour.png'
+        elif complex_array_quantity is ComplexArrayQuantity.IMAGINARY:
+            title = r'Scattered $\psi$ (Imaginary Part)'
+            plot_filename = 'psi_scattered_imaginary_contour.png'
+        
+        self.plot_scalar_field_at_obstacles(
+            PPW=PPW,
+            field_vals=total_potentials,
+            vmin=vmin,
+            vmax=vmax,
+            title=title,
+            plot_folder=plot_folder,
+            plot_filename=plot_filename
+        )
+        
     def plot_total_displacement(self, PPW:int, step:int=1, plot_folder: Optional[str] = None):
         """Plot total displacement for a given PPW solution."""
         if PPW not in self.obstacles:

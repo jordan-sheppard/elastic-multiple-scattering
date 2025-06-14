@@ -8,6 +8,7 @@ from scipy.special import hankel1
 from matplotlib import pyplot as plt
 from matplotlib import cm
 from matplotlib.colors import Colormap
+from matplotlib.contour import QuadContourSet
 import logging
 
 from .utils import sparse_periodic_tridiag, sparse_block_row, sparse_block_antidiag
@@ -918,7 +919,7 @@ class MKFE_FDObstacle(FDObstacle):
         Y: np.ndarray,
         Z: np.ndarray,
         **kwargs
-    ) -> None:
+    ) -> QuadContourSet:
         """Plot a filled contour plot with given X/Y/Z values.
 
         Assumes that we need to attach the last angular gridpoint
@@ -947,17 +948,40 @@ class MKFE_FDObstacle(FDObstacle):
             cmap = kwargs['cmap']
         else:
             cmap = cm.coolwarm
-        plt.contourf(X, Y, Z, color_grid_vals, cmap=cmap)
-        # plt.colorbar()
 
+        if 'vmin' in kwargs:
+            vmin = kwargs['vmin']
+        else:
+            vmin = None
+        
+        if 'vmax' in kwargs:
+            vmax = kwargs['vmax']
+        else:
+            vmax = None
 
+        if vmax is not None and vmin is not None:
+            levels = np.linspace(vmin, vmax, 1500)
+        else:
+            levels=None
+        return plt.contourf(X, Y, Z, color_grid_vals, cmap=cmap, vmin=vmin, vmax=vmax, levels=levels)
+
+    def plot_contourf(
+        self, 
+        vals: np.ndarray,
+        **kwargs
+    ) -> QuadContourSet:
+        """Plot the contour over the obstacle grid"""
+        # Plot contour over obstacle grid
+        X_global, Y_global = self.grid.local_coords_to_global_XY()
+        return self._plot_periodic_contourf(X_global, Y_global, vals, **kwargs)
+        
     def plot_phi_contourf(
         self,
         method:str = 'abs',
         u_inc: Optional[IncidentPlanePWave] = None,
         other_obstacles: Optional[list[Self]] = None,
         **kwargs
-    ) -> None:
+    ) -> QuadContourSet:
         """Plot the scattered phi values at this obstacle as a
         filled contour plot.
 
@@ -1001,7 +1025,7 @@ class MKFE_FDObstacle(FDObstacle):
         else:
             raise ValueError(f"Plotting method {method} not recognized.")
 
-        self._plot_periodic_contourf(X_global, Y_global, z_vals, **kwargs)
+        return self._plot_periodic_contourf(X_global, Y_global, z_vals, **kwargs)
 
 
     def plot_psi_contourf(
@@ -1010,7 +1034,7 @@ class MKFE_FDObstacle(FDObstacle):
         u_inc: Optional[IncidentPlanePWave] = None,
         other_obstacles: Optional[list[Self]] = None,
         **kwargs
-    ) -> None:
+    ) -> QuadContourSet:
         """Plot the scattered psi values at this obstacle as a
         filled contour plot.
 
@@ -1054,7 +1078,7 @@ class MKFE_FDObstacle(FDObstacle):
         else:
             raise ValueError(f"Plotting method {method} not recognized.")
 
-        self._plot_periodic_contourf(X_global, Y_global, z_vals, **kwargs)
+        return self._plot_periodic_contourf(X_global, Y_global, z_vals, **kwargs)
 
 
     def _cache_farfield_evaluator(self, obstacle: Self) -> None:

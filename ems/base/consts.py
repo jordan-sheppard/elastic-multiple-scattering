@@ -51,3 +51,17 @@ class ErrorType(Enum):
     L2_RELATIVE = 2 
     LINFTY = 3
 
+class PotentialType(Enum):
+    PHI = 1
+    PSI = 2 
+
+
+class ComplexArrayQuantity(Enum):
+    ABS = 1 
+    REAL = 2 
+    IMAGINARY = 3
+
+class PlotType(Enum):
+    SCATTERED = 1 
+    TOTAL = 2 
+
