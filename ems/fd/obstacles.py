@@ -1433,11 +1433,9 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         
         Returns:
             np.ndarray: An array representing the other obstacle's
-                scattered wave's local-r displacement at each
-                gridpoint on the physical boundary
+                scattered wave's radial stress at the physical boundary
             np.ndarray: An array representing the other obstacle's
-                scattered wave's local-theta displacement at each
-                gridpoint on the physical boundary
+                scattered wave's shear stress at the physical boundary
         """
         # Get the scattered wave from the provided obstacle at
         # this obstacle's boundary
