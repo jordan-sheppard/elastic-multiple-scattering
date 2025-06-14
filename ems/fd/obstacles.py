@@ -974,111 +974,7 @@ class MKFE_FDObstacle(FDObstacle):
         # Plot contour over obstacle grid
         X_global, Y_global = self.grid.local_coords_to_global_XY()
         return self._plot_periodic_contourf(X_global, Y_global, vals, **kwargs)
-        
-    def plot_phi_contourf(
-        self,
-        method:str = 'abs',
-        u_inc: Optional[IncidentPlanePWave] = None,
-        other_obstacles: Optional[list[Self]] = None,
-        **kwargs
-    ) -> QuadContourSet:
-        """Plot the scattered phi values at this obstacle as a
-        filled contour plot.
-
-        If no arguments are provided, plot the scattered phi
-        potential eminating from this obstacle.
-
-        If incident wave and/or other obstacles provided, linearly
-        add their phi potential values to this one before 
-        plotting.
-
-        Args:
-            method (str): Whether to plot the complex modulus ('abs'),
-                the real part ('real'), or the imaginary part ('imag')
-                of the psi scattered potential.
-                Default is 'abs'.
-            u_inc (IncidentPlanePWave): If provided, the incident
-                plane p-wave on this obstacle.
-            other_obstacles (list[Self]): If provided, a list
-                of other obstacles whose scattered potentials 
-                are incident upon this obstacle.
-            *cmap (Colormap): The Matplotlib colormap object 
-                to use for plotting (cm.coolwarm is used if none
-                is provided)
-        """
-        # Get total phi 
-        phi_tot = self.get_total_phi(u_inc, other_obstacles)
-
-        # Plot contour with given color/colormap args
-        X_global, Y_global = self.grid.local_coords_to_global_XY()
-
-        # Clean method string
-        method = method.strip().lower() 
-
-        # Get correct quantity to plot
-        if method == 'abs':
-            z_vals = np.abs(phi_tot)
-        elif method == 'real':
-            z_vals = np.real(phi_tot)
-        elif method == 'imag':
-            z_vals = np.imag(phi_tot)
-        else:
-            raise ValueError(f"Plotting method {method} not recognized.")
-
-        return self._plot_periodic_contourf(X_global, Y_global, z_vals, **kwargs)
-
-
-    def plot_psi_contourf(
-        self,
-        method:str = 'abs',
-        u_inc: Optional[IncidentPlanePWave] = None,
-        other_obstacles: Optional[list[Self]] = None,
-        **kwargs
-    ) -> QuadContourSet:
-        """Plot the scattered psi values at this obstacle as a
-        filled contour plot.
-
-        If no arguments are provided, plot the scattered phi
-        potential eminating from this obstacle.
-
-        If other obstacles provided, linearly
-        add their psi potential values to this one before 
-        plotting.
-
-        Args:
-            method (str): Whether to plot the complex modulus ('abs'),
-                the real part ('real'), or the imaginary part ('imag')
-                of the psi scattered potential.
-                Default is 'abs'.
-            u_inc (IncidentPlanePWave): If provided, the incident
-                plane p-wave on this obstacle.
-            other_obstacles (list[Self]): If provided, a list
-                of other obstacles whose scattered potentials 
-                are incident upon this obstacle.
-            *cmap (Colormap): The Matplotlib colormap object 
-                to use for plotting (cm.coolwarm is used if none
-                is provided)
-        """
-        # Get total psi 
-        psi_tot = self.get_total_psi(u_inc, other_obstacles)
-
-        # Plot contour with given color/colormap args
-        X_global, Y_global = self.grid.local_coords_to_global_XY()
-
-        # Clean the method string 
-        method = method.strip().lower() 
-
-        # Get correct quantity to plot
-        if method == 'abs':
-            z_vals = np.abs(psi_tot)
-        elif method == 'real':
-            z_vals = np.real(psi_tot)
-        elif method == 'imag':
-            z_vals = np.imag(psi_tot)
-        else:
-            raise ValueError(f"Plotting method {method} not recognized.")
-
-        return self._plot_periodic_contourf(X_global, Y_global, z_vals, **kwargs)
+    
 
 
     def _cache_farfield_evaluator(self, obstacle: Self) -> None:
@@ -2531,6 +2427,99 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         
         raise ValueError(f"Invalid coordinate system {coordinate_system}.")
     
+    def stress(
+        self,
+        coordinate_system: CoordinateSystem
+    ) -> np.ndarray:
+        """Calculates the stress at each gridpoint.
+
+        Args:
+            coordinate_system (CoordinateSystem): The desired coordinate
+                system to get these stresses in.
+        """
+        # Parse needed constants and derivative values at each gridpoint
+        phi = self.phi()
+        psi = self.psi()
+        dr_phi = self.dr_phi()
+        dr_psi = self.dr_psi()
+        dtheta_phi = self.dtheta_phi()
+        dtheta_psi = self.dtheta_psi()
+        d2r_phi = self.d2r_phi()
+        d2r_psi = self.d2r_psi()
+        d2theta_phi = self.d2theta_phi()
+        d2theta_psi = self.d2theta_psi()
+        dr_dtheta_phi = self.dr_dtheta_phi()
+        dr_dtheta_psi = self.dr_theta_psi()
+        r = self.grid.r_local
+        lam = self.parent_medium.lam 
+        mu = self.parent_medium.mu 
+        kp = self.parent_medium.kp
+
+        # Get m-local polar stresses 
+        sigma_rr_local = (
+            (-lam * kp) * phi 
+            + (2 * mu) * d2r_phi 
+            + (2 * mu) * (-dtheta_psi / (r**2) + dr_dtheta_psi / r)
+        )
+        sigma_rtheta_local = (
+            (2 * mu) * (dr_dtheta_phi / r - dtheta_phi / (r**2))
+            + mu * (d2theta_psi / (r**2) + dr_psi / r - d2r_psi)
+        )
+        sigma_thetatheta_local = (
+            (-lam * kp) * phi 
+            + (2 * mu) * (dr_phi / r + d2theta_phi / (r**2))
+            + (2 * mu) * (dtheta_psi / (r**2) - dr_dtheta_psi / r)
+        )
+        if coordinate_system is CoordinateSystem.LOCAL_POLAR:
+            return np.stack((sigma_rr_local, sigma_rtheta_local, sigma_thetatheta_local), axis=-1)
+        
+        # Get global polar stresses
+        theta_local = self.grid.theta_local
+        theta_global = self.grid.local_coords_to_global_polar()[1]
+        angle_diffs = theta_local - theta_global 
+        rotation_sine = np.sin(angle_diffs)
+        rotation_cosine = np.cos(angle_diffs)
+        
+        sigma_rr_global = (
+            sigma_rr_local * (rotation_cosine**2) 
+            + sigma_thetatheta_local * (rotation_sine**2)
+            - 2 * sigma_rtheta_local * rotation_sine * rotation_cosine
+        )
+        sigma_rtheta_global = (
+            sigma_rtheta_local * (rotation_cosine**2 - rotation_sine**2)
+            + (sigma_rr_local - sigma_thetatheta_local) * rotation_sine * rotation_cosine
+        )
+        sigma_thetatheta_global = (
+            sigma_rr_local * (rotation_sine**2) 
+            + sigma_thetatheta_local * (rotation_cosine**2)
+            + 2 * sigma_rtheta_local * rotation_sine * rotation_cosine
+        )
+        if coordinate_system is CoordinateSystem.GLOBAL_POLAR:
+            return np.stack((sigma_rr_global, sigma_rtheta_global, sigma_thetatheta_global), axis=-1)
+        
+        # Get global cartesian stresses from global polar stresses
+        sine_theta_global = np.sin(theta_global)
+        cosine_theta_global = np.cos(theta_global)
+
+        sigma_xx = (
+            sigma_rr_global * cosine_theta_global**2 
+            + sigma_thetatheta_global * sine_theta_global**2 
+            - 2 * sigma_rtheta_global * sine_theta_global * cosine_theta_global
+        )
+        sigma_xy = (
+            (sigma_rr_global - sigma_thetatheta_global) * sine_theta_global * cosine_theta_global 
+            + sigma_rtheta_global * (cosine_theta_global**2 - sine_theta_global**2)
+        )
+        sigma_yy = (
+            sigma_rr_global * sine_theta_global**2 
+            + sigma_thetatheta_global * cosine_theta_global**2 
+            + 2 * sigma_rtheta_global * sine_theta_global * cosine_theta_global
+        )
+        if coordinate_system is CoordinateSystem.LOCAL_CARTESIAN or coordinate_system is CoordinateSystem.GLOBAL_CARTESIAN:
+            return np.stack((sigma_xx, sigma_xy, sigma_yy), axis=-1)
+        
+        raise ValueError(f"Invalid coordinate system {coordinate_system}.")
+
 
     def get_total_displacement(
         self,
@@ -2566,6 +2555,44 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
             )
         
         return displacement
+    
+
+    def get_total_stress(
+        self,
+        incident_wave: Optional[IncidentPlanePWave] = None,
+        other_obstacles: Optional[list[Self]] = None,
+        coordinate_system: CoordinateSystem = CoordinateSystem.GLOBAL_POLAR
+    ) -> np.ndarray:
+        """Gets the total stress at each gridpoint at this obstacle.
+        
+        xx/rr stress is the [:,:,0] value at each gridpoint,
+        xy/r_theta stress is the [:,:,1] value at each gridpoint,
+        and yy/theta_theta stress is the [:,:,2] value at each gridpoint
+        """
+        # Get obstacle stresses in given coordinate system
+        stress = self.stress(coordinate_system)
+        
+        # Add in other obstacle stresses in given coordinate system
+        if other_obstacles is not None:
+            for obstacle in other_obstacles:
+                stress += obstacle.get_scattered_wave_at_obstacle(
+                    obstacle=self,
+                    boundary_only=False,
+                    desired_quantity=QOI.STRESS,
+                    update=False,
+                    coordinate_system=coordinate_system
+                )
+        
+        # Add in incident wave stress in given coordinate system
+        if incident_wave is not None:
+            incident_wave_evaluator = self.incident_evaluators[incident_wave.id]
+            stress += incident_wave_evaluator.stress(
+                boundary_only=False,
+                coordinate_system=coordinate_system
+            )
+
+        return stress
+
 
     def plot_displacement_vector_field(
         self,

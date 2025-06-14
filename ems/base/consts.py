@@ -51,9 +51,15 @@ class ErrorType(Enum):
     L2_RELATIVE = 2 
     LINFTY = 3
 
-class PotentialType(Enum):
+class ScalarQOI(Enum):
     PHI = 1
     PSI = 2 
+    DISPLACEMENT_X = 3
+    DISPLACEMENT_Y = 4
+    STRESS_XX = 5
+    STRESS_XY = 6
+    STRESS_YY = 7
+    
 
 
 class ComplexArrayQuantity(Enum):
@@ -64,4 +70,12 @@ class ComplexArrayQuantity(Enum):
 class PlotType(Enum):
     SCATTERED = 1 
     TOTAL = 2 
+
+class StressType(Enum):
+    RADIAL = 1 
+    SHEAR = 2 
+    HOOP = 3 
+    XX = 4 
+    XY = 5 
+    YY = 6
 
