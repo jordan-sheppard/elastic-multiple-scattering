@@ -8,6 +8,7 @@ from scipy.special import hankel1
 from matplotlib import pyplot as plt
 from matplotlib import cm
 from matplotlib.colors import Colormap
+from matplotlib.contour import QuadContourSet
 import logging
 
 from .utils import sparse_periodic_tridiag, sparse_block_row, sparse_block_antidiag
@@ -918,7 +919,7 @@ class MKFE_FDObstacle(FDObstacle):
         Y: np.ndarray,
         Z: np.ndarray,
         **kwargs
-    ) -> None:
+    ) -> QuadContourSet:
         """Plot a filled contour plot with given X/Y/Z values.
 
         Assumes that we need to attach the last angular gridpoint
@@ -947,114 +948,33 @@ class MKFE_FDObstacle(FDObstacle):
             cmap = kwargs['cmap']
         else:
             cmap = cm.coolwarm
-        plt.contourf(X, Y, Z, color_grid_vals, cmap=cmap)
-        # plt.colorbar()
 
-
-    def plot_phi_contourf(
-        self,
-        method:str = 'abs',
-        u_inc: Optional[IncidentPlanePWave] = None,
-        other_obstacles: Optional[list[Self]] = None,
-        **kwargs
-    ) -> None:
-        """Plot the scattered phi values at this obstacle as a
-        filled contour plot.
-
-        If no arguments are provided, plot the scattered phi
-        potential eminating from this obstacle.
-
-        If incident wave and/or other obstacles provided, linearly
-        add their phi potential values to this one before 
-        plotting.
-
-        Args:
-            method (str): Whether to plot the complex modulus ('abs'),
-                the real part ('real'), or the imaginary part ('imag')
-                of the psi scattered potential.
-                Default is 'abs'.
-            u_inc (IncidentPlanePWave): If provided, the incident
-                plane p-wave on this obstacle.
-            other_obstacles (list[Self]): If provided, a list
-                of other obstacles whose scattered potentials 
-                are incident upon this obstacle.
-            *cmap (Colormap): The Matplotlib colormap object 
-                to use for plotting (cm.coolwarm is used if none
-                is provided)
-        """
-        # Get total phi 
-        phi_tot = self.get_total_phi(u_inc, other_obstacles)
-
-        # Plot contour with given color/colormap args
-        X_global, Y_global = self.grid.local_coords_to_global_XY()
-
-        # Clean method string
-        method = method.strip().lower() 
-
-        # Get correct quantity to plot
-        if method == 'abs':
-            z_vals = np.abs(phi_tot)
-        elif method == 'real':
-            z_vals = np.real(phi_tot)
-        elif method == 'imag':
-            z_vals = np.imag(phi_tot)
+        if 'vmin' in kwargs:
+            vmin = kwargs['vmin']
         else:
-            raise ValueError(f"Plotting method {method} not recognized.")
-
-        self._plot_periodic_contourf(X_global, Y_global, z_vals, **kwargs)
-
-
-    def plot_psi_contourf(
-        self,
-        method:str = 'abs',
-        u_inc: Optional[IncidentPlanePWave] = None,
-        other_obstacles: Optional[list[Self]] = None,
-        **kwargs
-    ) -> None:
-        """Plot the scattered psi values at this obstacle as a
-        filled contour plot.
-
-        If no arguments are provided, plot the scattered phi
-        potential eminating from this obstacle.
-
-        If other obstacles provided, linearly
-        add their psi potential values to this one before 
-        plotting.
-
-        Args:
-            method (str): Whether to plot the complex modulus ('abs'),
-                the real part ('real'), or the imaginary part ('imag')
-                of the psi scattered potential.
-                Default is 'abs'.
-            u_inc (IncidentPlanePWave): If provided, the incident
-                plane p-wave on this obstacle.
-            other_obstacles (list[Self]): If provided, a list
-                of other obstacles whose scattered potentials 
-                are incident upon this obstacle.
-            *cmap (Colormap): The Matplotlib colormap object 
-                to use for plotting (cm.coolwarm is used if none
-                is provided)
-        """
-        # Get total psi 
-        psi_tot = self.get_total_psi(u_inc, other_obstacles)
-
-        # Plot contour with given color/colormap args
-        X_global, Y_global = self.grid.local_coords_to_global_XY()
-
-        # Clean the method string 
-        method = method.strip().lower() 
-
-        # Get correct quantity to plot
-        if method == 'abs':
-            z_vals = np.abs(psi_tot)
-        elif method == 'real':
-            z_vals = np.real(psi_tot)
-        elif method == 'imag':
-            z_vals = np.imag(psi_tot)
+            vmin = None
+        
+        if 'vmax' in kwargs:
+            vmax = kwargs['vmax']
         else:
-            raise ValueError(f"Plotting method {method} not recognized.")
+            vmax = None
 
-        self._plot_periodic_contourf(X_global, Y_global, z_vals, **kwargs)
+        if vmax is not None and vmin is not None:
+            levels = np.linspace(vmin, vmax, 1500)
+        else:
+            levels=None
+        return plt.contourf(X, Y, Z, color_grid_vals, cmap=cmap, vmin=vmin, vmax=vmax, levels=levels)
+
+    def plot_contourf(
+        self, 
+        vals: np.ndarray,
+        **kwargs
+    ) -> QuadContourSet:
+        """Plot the contour over the obstacle grid"""
+        # Plot contour over obstacle grid
+        X_global, Y_global = self.grid.local_coords_to_global_XY()
+        return self._plot_periodic_contourf(X_global, Y_global, vals, **kwargs)
+    
 
 
     def _cache_farfield_evaluator(self, obstacle: Self) -> None:
@@ -1154,7 +1074,7 @@ class MKFE_FDObstacle(FDObstacle):
         elif desired_quantity is QOI.DISPLACEMENT:
             return farfield_evaluator.displacement(boundary_only, coordinate_system)
         elif desired_quantity is QOI.STRESS:
-            raise NotImplementedError(f"Error: Stress QOI not yet implemented")
+            return farfield_evaluator.stress(boundary_only, coordinate_system)
         else:
             raise ValueError("desired_quantity must be a QOI Enum value (POTENTIALS, DISPLACEMENT, or STRESS)")
     
@@ -1376,6 +1296,77 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         displacement_local_r = obstacle_displacement[:,0]
         displacement_local_theta = obstacle_displacement[:,1]
         return displacement_local_r, displacement_local_theta
+    
+    def _get_incident_wave_stress_data(
+        self, 
+        incident_wave: IncidentPlanePWave
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Get incident wave stress data in a local
+        coordinate decomposition at each gridpoint of
+        this obstacle's physical boundary.
+        
+        Args:
+            incident_wave (IncidentPlanePWave): The incident wave
+                whose influence we need to take into account at
+                the physical boundary
+        
+        Returns:
+            np.ndarray: An array representing the incident wave's
+                local-r displacement at each gridpoint on the 
+                physical boundary 
+            np.ndarray: An array representing the incident wave's
+                local-theta displacement at each gridpoint on 
+                the physical boundary
+        """
+        # Cache incident wave evaluator if that wave not already seen 
+        if not incident_wave.id in self.incident_evaluators:
+            self.incident_evaluators[incident_wave.id] = (
+                IncidentPlanePWaveEvaluator(
+                    incident_wave=incident_wave,
+                    local_grid = self.grid,
+                    medium=self.parent_medium
+                )
+            )
+        
+        # Evaluate incident wave displacmenet in this local coordinate system
+        uinc_evaluator = self.incident_evaluators[incident_wave.id]
+        incident_wave_stress_local = uinc_evaluator.stress(boundary_only=True)
+        stress_rr_local = incident_wave_stress_local[:,0]
+        stress_rtheta_local = incident_wave_stress_local[:,1]
+        return stress_rr_local, stress_rtheta_local
+
+    def _get_other_obstacle_stress_data(
+        self,
+        obstacle: MKFE_FDObstacle,
+        update: bool = True
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Get scattered wave stress data (from the 
+        wave scattered from another obstacle) in a local
+        coordinate decomposition at each gridpoint of
+        this obstacle's physical boundary.
+        
+        Args:
+            obstacle (MKFE_FDObstacle): The obstacle whose 
+                scattered wave is incident upon this obstacle's
+                physical boundary
+            update (bool): Whether or not to update 
+        
+        Returns:
+            np.ndarray: An array representing the other obstacle's
+                scattered wave's radial stress at the physical boundary
+            np.ndarray: An array representing the other obstacle's
+                scattered wave's shear stress at the physical boundary
+        """
+        # Get the scattered wave from the provided obstacle at
+        # this obstacle's boundary
+        obstacle_stress = obstacle.get_scattered_wave_at_obstacle(
+            obstacle=self,
+            desired_quantity=QOI.STRESS,
+            boundary_only=True
+        )
+        stress_local_rr = obstacle_stress[:,0]
+        stress_local_rtheta = obstacle_stress[:,1]
+        return stress_local_rr, stress_local_rtheta
         
 
     def hard_bc_forcing_vector(
@@ -1436,26 +1427,46 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
             np.ndarray: The entries for the forcing vector
                 corresponding to a soft BC at the physical boundary
         """
-        raise NotImplementedError("Soft BC not yet implemented")
+        stress_local_rr = np.zeros(self.grid.num_angular_gridpoints, dtype='complex128')
+        stress_local_rtheta = np.zeros(self.grid.num_angular_gridpoints, dtype='complex128')
+
+        ## Process incident wave stress data
+        if incident_wave is not None:
+            incident_stress = self._get_incident_wave_stress_data(incident_wave)
+            stress_local_rr += incident_stress[0]
+            stress_local_rtheta += incident_stress[1]
+        
+        ## Process other obstacle incoming wave data
+        # Get other obstacle influences on this obstacle using Karp expansions
+        for obstacle in obstacles:
+            obstacle_stress = self._get_other_obstacle_stress_data(obstacle)
+            stress_local_rr += obstacle_stress[0]
+            stress_local_rtheta += obstacle_stress[1]
+
+        # Recall: the focing vector is the negative of these
+        # displacements (since we want total displacement = 0 at
+        # the physical boundary)
+        return np.hstack((-stress_local_rr, -stress_local_rtheta))
     
 
     def construct_forcing_vector(self, obstacles: list[MKFE_FDObstacle], incident_wave = None):
         # Get physical BC data for first 2*N_{theta} entries
         if self.bc is BoundaryCondition.HARD:
             physical_bc_data = self.hard_bc_forcing_vector(obstacles, incident_wave)
-        else:
+        elif self.bc is BoundaryCondition.SOFT:
             physical_bc_data = self.soft_bc_forcing_vector(obstacles, incident_wave)
-
+        else:
+            raise ValueError("Error: Unknown boundary condition. Cannot construct forcing vector.")
+    
         # Get rest of forcing vector data 
         other_forcing_data = np.zeros(self.num_unknowns - 2*self.num_angular_gridpoints)
         
         # Construct and return total forcing vector
         return np.hstack((physical_bc_data, other_forcing_data))
 
-
-    def _get_physical_BC_rows(self) -> list[sparse.csc_array]:
+    def _get_hard_physical_BC_rows(self) -> list[sparse.csc_array]:
         """Gets rows/equations in the finite-difference matrix
-        corresponding to the physical boundary condition at the
+        corresponding to a hard physical boundary condition at the
         obstacle boundary.
 
         Returns:
@@ -1489,6 +1500,149 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         blocks = [R_left, T_middle, R_right, num_zeros_right]
         physical_bc_rows = sparse_block_row(physical_bc_row_shape, blocks)
         return [physical_bc_rows]
+
+
+    def _get_soft_physical_BC_rows(self) -> list[sparse.csc_array]:
+        """Gets rows/equations in the finite-difference matrix
+        corresponding to a soft physical boundary condition at the
+        obstacle boundary.
+
+        Returns:
+            list[sparse.csc_array]: A list of block rows 
+                of the finite-difference matrix corresponding 
+                to these equations (each element is a sparse array 
+                that is short and fat,
+                spanning the entire length of the finite-difference
+                matrix, but only with the 2*N_{theta} equations
+                for this boundary condition as rows).
+        """
+        # Parse needed constants 
+        r0 = self.r_obstacle
+        dtheta = self.grid.dtheta
+        dr = self.grid.dr
+        lam = self.parent_medium.lam 
+        mu = self.parent_medium.mu
+        kp = self.parent_medium.kp  
+
+        # Create FD submatrix entries
+        a = 2 * mu / (dr**2)
+        b = mu / (r0**2 * dtheta)
+        c = mu / (2 * r0 * dr * dtheta)
+        p = mu / (dr**2)
+        q = mu / (r0**2 * dtheta**2)
+        s = mu / (2 * r0 * dr)
+
+
+        ## Create FD submatrices
+        # sigma_rr submatrices 
+        A_rr_p_0 = (
+            a * sparse.eye_array(
+                self.num_angular_gridpoints,
+                format='csc'
+            )
+        )
+        A_rr_s_0 = (
+            sparse_periodic_tridiag(
+                self.num_angular_gridpoints,
+                0., c, -c
+            )
+        )
+        A_rr_p_1 = (
+            (-lam * kp**2 - 2*a) * sparse.eye_array(
+                self.num_angular_gridpoints,
+                format='csc'
+            )
+        )
+        A_rr_s_1 = (
+            sparse_periodic_tridiag(
+                self.num_angular_gridpoints,
+                0., b, -b
+            )
+        )
+        A_rr_p_2 = (
+            a * sparse.eye_array(
+                self.num_angular_gridpoints,
+                format='csc'
+            )
+        )
+        A_rr_s_2 = (
+            sparse_periodic_tridiag(
+                self.num_angular_gridpoints,
+                0., -c, c
+            )
+        )
+
+        # sigma_rtheta submatrices
+        A_rtheta_p_0 = (
+            sparse_periodic_tridiag(
+                self.num_angular_gridpoints,
+                0., c, -c
+            )
+        ) 
+        A_rtheta_s_0 = (
+            (-p-s) * sparse.eye_array(
+                self.num_angular_gridpoints,
+                format='csc'
+            )
+        )
+        A_rtheta_p_1 = (
+            sparse_periodic_tridiag(
+                self.num_angular_gridpoints,
+                0., b, -b
+            )
+        ) 
+        A_rtheta_s_1 = (
+            sparse_periodic_tridiag(
+                self.num_angular_gridpoints,
+                2*(p-q), q, q
+            )
+        ) 
+        A_rtheta_p_2 = (
+            sparse_periodic_tridiag(
+                self.num_angular_gridpoints,
+                0., -c, c
+            )
+        )
+        A_rtheta_s_2 = (
+            (-p+s) * sparse.eye_array(
+                self.num_angular_gridpoints,
+                format='csc'
+            )
+        )
+
+        # Create block row for these 2*N_{theta} equations
+        sigma_rr_row_shape = (self.num_angular_gridpoints, self.num_unknowns)
+        sigma_rtheta_row_shape = (self.num_angular_gridpoints, self.num_unknowns)
+        
+        num_zeros_right = self.num_unknowns - (6 * self.num_angular_gridpoints)
+        sigma_rr_blocks = [A_rr_p_0, A_rr_s_0, A_rr_p_1, A_rr_s_1, A_rr_p_2, A_rr_s_2, num_zeros_right]
+        sigma_rtheta_blocks = [A_rtheta_p_0, A_rtheta_s_0, A_rtheta_p_1, A_rtheta_s_1, A_rtheta_p_2, A_rtheta_s_2, num_zeros_right]
+        
+        sigma_rr_rows = sparse_block_row(sigma_rr_row_shape, sigma_rr_blocks)
+        sigma_rtheta_rows = sparse_block_row(sigma_rtheta_row_shape, sigma_rtheta_blocks)
+        return [sigma_rr_rows, sigma_rtheta_rows]
+
+
+    def _get_physical_BC_rows(self) -> list[sparse.csc_array]:
+        """Gets rows/equations in the finite-difference matrix
+        corresponding to the physical boundary condition at the
+        obstacle boundary.
+
+        Returns:
+            list[sparse.csc_array]: A list of block rows 
+                of the finite-difference matrix corresponding 
+                to these equations (each element is a sparse array 
+                that is short and fat,
+                spanning the entire length of the finite-difference
+                matrix, but only with the 2*N_{theta} equations
+                for this boundary condition as rows).
+        """
+        if self.bc is BoundaryCondition.HARD:
+            return self._get_hard_physical_BC_rows()
+        elif self.bc is BoundaryCondition.SOFT:
+            return self._get_soft_physical_BC_rows()
+        else:
+            raise ValueError(f"Cannot get physical BC rows for boundary condition {self.bc} - not of type SOFT or HARD")
 
 
     def _get_governing_system_rows(self) -> list[sparse.csc_array]:
@@ -2178,7 +2332,7 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         """
         return 1/(self.grid.dtheta**2) * (
             np.roll(self.phi_vals, -1, axis=0)      # Roll of -1 along angular axis brings j+1 gridpoints into line with j gridpoints
-            - self.phi_vals                         # Original i,j gridpoints
+            - 2 * self.phi_vals                         # Original i,j gridpoints
             + np.roll(self.phi_vals, 1, axis=0)     # Roll of +1 along angular axis brings j-1 gridpoints into line with j gridpoints
         )
     
@@ -2192,8 +2346,8 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         """
         return 1/(self.grid.dtheta**2) * (
             np.roll(self.psi_vals, -1, axis=0)      # Roll of -1 along angular axis brings j+1 gridpoints into line with j gridpoints
-            - self.psi_vals                         # Original i,j gridpoints
-            + np.roll(self.phi_vals, 1, axis=0)     # Roll of +1 along angular axis brings j-1 gridpoints into line with j gridpoints
+            - 2 * self.psi_vals                         # Original i,j gridpoints
+            + np.roll(self.psi_vals, 1, axis=0)     # Roll of +1 along angular axis brings j-1 gridpoints into line with j gridpoints
         )
 
     def dr_dtheta_phi(self) -> np.ndarray:
@@ -2273,6 +2427,99 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         
         raise ValueError(f"Invalid coordinate system {coordinate_system}.")
     
+    def stress(
+        self,
+        coordinate_system: CoordinateSystem
+    ) -> np.ndarray:
+        """Calculates the stress at each gridpoint.
+
+        Args:
+            coordinate_system (CoordinateSystem): The desired coordinate
+                system to get these stresses in.
+        """
+        # Parse needed constants and derivative values at each gridpoint
+        phi = self.phi()
+        psi = self.psi()
+        dr_phi = self.dr_phi()
+        dr_psi = self.dr_psi()
+        dtheta_phi = self.dtheta_phi()
+        dtheta_psi = self.dtheta_psi()
+        d2r_phi = self.d2r_phi()
+        d2r_psi = self.d2r_psi()
+        d2theta_phi = self.d2theta_phi()
+        d2theta_psi = self.d2theta_psi()
+        dr_dtheta_phi = self.dr_dtheta_phi()
+        dr_dtheta_psi = self.dr_theta_psi()
+        r = self.grid.r_local
+        lam = self.parent_medium.lam 
+        mu = self.parent_medium.mu 
+        kp = self.parent_medium.kp
+
+        # Get m-local polar stresses 
+        sigma_rr_local = (
+            (-lam * kp**2) * phi 
+            + (2 * mu) * d2r_phi 
+            - (2 * mu) * (dtheta_psi / (r**2) - dr_dtheta_psi / r)
+        )
+        sigma_rtheta_local = (
+            (2 * mu) * (dr_dtheta_phi / r - dtheta_phi / (r**2))
+            + mu * (d2theta_psi / (r**2) + dr_psi / r - d2r_psi)
+        )
+        sigma_thetatheta_local = (
+            (-lam * kp**2) * phi 
+            + (2 * mu) * (dr_phi / r + d2theta_phi / (r**2))
+            + (2 * mu) * (dtheta_psi / (r**2) - dr_dtheta_psi / r)
+        )
+        if coordinate_system is CoordinateSystem.LOCAL_POLAR:
+            return np.stack((sigma_rr_local, sigma_rtheta_local, sigma_thetatheta_local), axis=-1)
+        
+        # Get global polar stresses
+        theta_local = self.grid.theta_local
+        theta_global = self.grid.local_coords_to_global_polar()[1]
+        angle_diffs = theta_local - theta_global 
+        rotation_sine = np.sin(angle_diffs)
+        rotation_cosine = np.cos(angle_diffs)
+        
+        sigma_rr_global = (
+            sigma_rr_local * (rotation_cosine**2) 
+            + sigma_thetatheta_local * (rotation_sine**2)
+            - 2 * sigma_rtheta_local * rotation_sine * rotation_cosine
+        )
+        sigma_rtheta_global = (
+            sigma_rtheta_local * (rotation_cosine**2 - rotation_sine**2)
+            + (sigma_rr_local - sigma_thetatheta_local) * rotation_sine * rotation_cosine
+        )
+        sigma_thetatheta_global = (
+            sigma_rr_local * (rotation_sine**2) 
+            + sigma_thetatheta_local * (rotation_cosine**2)
+            + 2 * sigma_rtheta_local * rotation_sine * rotation_cosine
+        )
+        if coordinate_system is CoordinateSystem.GLOBAL_POLAR:
+            return np.stack((sigma_rr_global, sigma_rtheta_global, sigma_thetatheta_global), axis=-1)
+        
+        # Get global cartesian stresses from global polar stresses
+        sine_theta_global = np.sin(theta_global)
+        cosine_theta_global = np.cos(theta_global)
+
+        sigma_xx = (
+            sigma_rr_global * cosine_theta_global**2 
+            + sigma_thetatheta_global * sine_theta_global**2 
+            - 2 * sigma_rtheta_global * sine_theta_global * cosine_theta_global
+        )
+        sigma_xy = (
+            (sigma_rr_global - sigma_thetatheta_global) * sine_theta_global * cosine_theta_global 
+            + sigma_rtheta_global * (cosine_theta_global**2 - sine_theta_global**2)
+        )
+        sigma_yy = (
+            sigma_rr_global * sine_theta_global**2 
+            + sigma_thetatheta_global * cosine_theta_global**2 
+            + 2 * sigma_rtheta_global * sine_theta_global * cosine_theta_global
+        )
+        if coordinate_system is CoordinateSystem.LOCAL_CARTESIAN or coordinate_system is CoordinateSystem.GLOBAL_CARTESIAN:
+            return np.stack((sigma_xx, sigma_xy, sigma_yy), axis=-1)
+        
+        raise ValueError(f"Invalid coordinate system {coordinate_system}.")
+
 
     def get_total_displacement(
         self,
@@ -2308,6 +2555,44 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
             )
         
         return displacement
+    
+
+    def get_total_stress(
+        self,
+        incident_wave: Optional[IncidentPlanePWave] = None,
+        other_obstacles: Optional[list[Self]] = None,
+        coordinate_system: CoordinateSystem = CoordinateSystem.GLOBAL_POLAR
+    ) -> np.ndarray:
+        """Gets the total stress at each gridpoint at this obstacle.
+        
+        xx/rr stress is the [:,:,0] value at each gridpoint,
+        xy/r_theta stress is the [:,:,1] value at each gridpoint,
+        and yy/theta_theta stress is the [:,:,2] value at each gridpoint
+        """
+        # Get obstacle stresses in given coordinate system
+        stress = self.stress(coordinate_system)
+        
+        # Add in other obstacle stresses in given coordinate system
+        if other_obstacles is not None:
+            for obstacle in other_obstacles:
+                stress += obstacle.get_scattered_wave_at_obstacle(
+                    obstacle=self,
+                    boundary_only=False,
+                    desired_quantity=QOI.STRESS,
+                    update=False,
+                    coordinate_system=coordinate_system
+                )
+        
+        # Add in incident wave stress in given coordinate system
+        if incident_wave is not None:
+            incident_wave_evaluator = self.incident_evaluators[incident_wave.id]
+            stress += incident_wave_evaluator.stress(
+                boundary_only=False,
+                coordinate_system=coordinate_system
+            )
+
+        return stress
+
 
     def plot_displacement_vector_field(
         self,
