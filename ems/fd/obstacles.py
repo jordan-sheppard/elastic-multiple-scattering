@@ -2332,7 +2332,7 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         """
         return 1/(self.grid.dtheta**2) * (
             np.roll(self.phi_vals, -1, axis=0)      # Roll of -1 along angular axis brings j+1 gridpoints into line with j gridpoints
-            - self.phi_vals                         # Original i,j gridpoints
+            - 2 * self.phi_vals                         # Original i,j gridpoints
             + np.roll(self.phi_vals, 1, axis=0)     # Roll of +1 along angular axis brings j-1 gridpoints into line with j gridpoints
         )
     
@@ -2346,8 +2346,8 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
         """
         return 1/(self.grid.dtheta**2) * (
             np.roll(self.psi_vals, -1, axis=0)      # Roll of -1 along angular axis brings j+1 gridpoints into line with j gridpoints
-            - self.psi_vals                         # Original i,j gridpoints
-            + np.roll(self.phi_vals, 1, axis=0)     # Roll of +1 along angular axis brings j-1 gridpoints into line with j gridpoints
+            - 2 * self.psi_vals                         # Original i,j gridpoints
+            + np.roll(self.psi_vals, 1, axis=0)     # Roll of +1 along angular axis brings j-1 gridpoints into line with j gridpoints
         )
 
     def dr_dtheta_phi(self) -> np.ndarray:
@@ -2457,16 +2457,16 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
 
         # Get m-local polar stresses 
         sigma_rr_local = (
-            (-lam * kp) * phi 
+            (-lam * kp**2) * phi 
             + (2 * mu) * d2r_phi 
-            + (2 * mu) * (-dtheta_psi / (r**2) + dr_dtheta_psi / r)
+            - (2 * mu) * (dtheta_psi / (r**2) - dr_dtheta_psi / r)
         )
         sigma_rtheta_local = (
             (2 * mu) * (dr_dtheta_phi / r - dtheta_phi / (r**2))
             + mu * (d2theta_psi / (r**2) + dr_psi / r - d2r_psi)
         )
         sigma_thetatheta_local = (
-            (-lam * kp) * phi 
+            (-lam * kp**2) * phi 
             + (2 * mu) * (dr_phi / r + d2theta_phi / (r**2))
             + (2 * mu) * (dtheta_psi / (r**2) - dr_dtheta_psi / r)
         )

@@ -1100,11 +1100,11 @@ class ElasticPolarFarfieldEvaluator:
 
         # Evaluate mbar-local stresses before rotation
         sigma_rr_mbar = (
-            (-self.lam * self.kp) * Kp
+            (-self.lam * self.kp**2) * Kp
             + (2 * self.mu) * (
                 d2_rr_mbar_Kp
-            ) + (2 * self.mu) * (
-                -dtheta_mbar_Ks / (R_mbar**2) + d2_rtheta_mbar_Ks / R_mbar
+            ) - (2 * self.mu) * (
+                dtheta_mbar_Ks / (R_mbar**2) - d2_rtheta_mbar_Ks / R_mbar
             )
         )
         sigma_rtheta_mbar = (
@@ -1115,7 +1115,7 @@ class ElasticPolarFarfieldEvaluator:
             )
         )
         sigma_thetatheta_mbar = (
-            (-self.lam * self.kp) * Kp
+            (-self.lam * self.kp**2) * Kp
             + (2 * self.mu) * (
                 dr_mbar_Kp / R_mbar + d2_thetatheta_mbar_Kp / (R_mbar**2)
             )
