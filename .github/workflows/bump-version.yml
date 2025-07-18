@@ -1,0 +1,58 @@
+name: Bump Version and Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New version (e.g. 0.2.3)"
+        required: true
+        type: string
+
+jobs:
+  tag:
+    name: Bump pyproject.toml version and push tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tomli-w
+        run: pip install tomli-w
+
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Write version bump script
+        run: |
+            cat <<EOF > bump_version.py
+            from tomlkit import parse, dumps
+
+            import sys
+            from pathlib import Path
+
+            version = sys.argv[1]
+            path = Path("pyproject.toml")
+            doc = parse(path.read_text())
+
+            doc["project"]["version"] = version
+            path.write_text(dumps(doc))
+            EOF
+
+      - name: Run version bump and tag
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          python bump_version.py "$VERSION"
+
+          git add pyproject.toml
+          git commit -m "🔖 Bump version to v$VERSION"
+          git tag "v$VERSION"
+          git push origin HEAD
+          git push origin "v$VERSION"
