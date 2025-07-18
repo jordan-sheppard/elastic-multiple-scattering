@@ -1,4 +1,4 @@
-name: Bump Version and Tag
+name: Bump Version and Create PR
 
 on:
   workflow_dispatch:
@@ -8,17 +8,18 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: write  # needed for creating PRs and pushing branches
+
 jobs:
-  tag:
-    name: Bump pyproject.toml version and push tag
+  bump_version:
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout code
+      - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,34 +29,52 @@ jobs:
       - name: Install tomlkit
         run: pip install tomlkit
 
-      - name: Set up Git
+      - name: Set up Git user
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
       - name: Write version bump script
         run: |
-            cat <<EOF > bump_version.py
-            from tomlkit import parse, dumps
+          cat <<EOF > bump_version.py
+from tomlkit import parse, dumps
 
-            import sys
-            from pathlib import Path
+import sys
+from pathlib import Path
 
-            version = sys.argv[1]
-            path = Path("pyproject.toml")
-            doc = parse(path.read_text())
+version = sys.argv[1]
+path = Path("pyproject.toml")
+doc = parse(path.read_text())
 
-            doc["project"]["version"] = version
-            path.write_text(dumps(doc))
-            EOF
+doc["project"]["version"] = version
+path.write_text(dumps(doc))
+EOF
 
-      - name: Run version bump and tag
+      - name: Run version bump script
         run: |
-          VERSION="${{ github.event.inputs.version }}"
-          python bump_version.py "$VERSION"
+          python bump_version.py "${{ github.event.inputs.version }}"
 
+      - name: Commit version bump
+        run: |
           git add pyproject.toml
-          git commit -m "🔖 Bump version to v$VERSION"
-          git tag "v$VERSION"
-          git push origin HEAD
-          git push origin "v$VERSION"
+          git commit -m "🔖 Bump version to v${{ github.event.inputs.version }}"
+
+      - name: Create new branch
+        run: |
+          git checkout -b bump-version-${{ github.event.inputs.version }}
+
+      - name: Push branch to origin
+        run: |
+          git push origin bump-version-${{ github.event.inputs.version }}
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "🔖 Bump version to v${{ github.event.inputs.version }}"
+          branch: bump-version-${{ github.event.inputs.version }}
+          title: "Bump version to v${{ github.event.inputs.version }}"
+          body: |
+            This PR bumps the version to v${{ github.event.inputs.version }}.
+          base: master
+          draft: false
