@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "elastic-multiple-scattering"
+name = "emults"
 version = "0.0.1"
 description = "Elastic multiple scattering solver using Karp Farfield Expansion artificial boundary conditions (MKFE-ABC)."
 readme = "README.md"
@@ -25,7 +25,7 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent"
 ]
-keywords = ["scattering", "multiple-scattering", "elastic", "karp", "farfield", "MKFE", "MKFE-ABC", "solver", "finite-difference"]
+keywords = ["scattering", "multiple-scattering", "waves", "wave-scattering", "elastic", "karp", "farfield", "MKFE", "MKFE-ABC", "solver", "finite-difference"]
 
 [project.urls]
 Homepage = "https://github.com/jordan-sheppard/elastic-multiple-scattering"
@@ -34,7 +34,7 @@ Issues = "https://github.com/jordan-sheppard/elastic-multiple-scattering/issues"
 
 [tool.hatch.build.targets.sdist]
 only-include = [
-  "src/elastic_multiple_scattering",
+  "src/emults",
   "README.md",
   "LICENSE"
 ]
