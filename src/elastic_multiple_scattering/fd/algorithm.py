@@ -1424,7 +1424,7 @@ class MKFE_FD_ScatteringProblem:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot total xx-stress \sigma_{xx} for a given PPW solution."""
+        r"""Plot total xx-stress \sigma_{xx} for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
@@ -1464,7 +1464,7 @@ class MKFE_FD_ScatteringProblem:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot scattered xx-stress \sigma_{xx} for a given PPW solution."""
+        r"""Plot scattered xx-stress \sigma_{xx} for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
@@ -1504,7 +1504,7 @@ class MKFE_FD_ScatteringProblem:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot total xy-stress \sigma_{xy} for a given PPW solution."""
+        r"""Plot total xy-stress \sigma_{xy} for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
@@ -1544,7 +1544,7 @@ class MKFE_FD_ScatteringProblem:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot scattered xy-stress \sigma_{xy} for a given PPW solution."""
+        r"""Plot scattered xy-stress \sigma_{xy} for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
@@ -1584,7 +1584,7 @@ class MKFE_FD_ScatteringProblem:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot total yy-stress \sigma_{yy} for a given PPW solution."""
+        r"""Plot total yy-stress \sigma_{yy} for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
@@ -1624,7 +1624,7 @@ class MKFE_FD_ScatteringProblem:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot scattered yy-stress \sigma_{yy} for a given PPW solution."""
+        r"""Plot scattered yy-stress \sigma_{yy} for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         

@@ -461,7 +461,7 @@ class ScatteringProblemPlotter:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot total xx-stress \sigma_{xx} for a given PPW solution."""
+        r"""Plot total xx-stress \sigma_{xx} for a given PPW solution."""
         # Get scattered psi at each obstacle
         sigma_xx_total, vmin, vmax = self.get_scalars_for_plotting(
             scalar_qoi=ScalarQOI.STRESS_XX,
@@ -495,7 +495,7 @@ class ScatteringProblemPlotter:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot scattered xx-stress \sigma_{xx} for a given PPW solution."""
+        r"""Plot scattered xx-stress \sigma_{xx} for a given PPW solution."""
         # Get scattered psi at each obstacle
         sigma_xx_scattered, vmin, vmax = self.get_scalars_for_plotting(
             scalar_qoi=ScalarQOI.STRESS_XX,
@@ -529,7 +529,7 @@ class ScatteringProblemPlotter:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot total xy-stress \sigma_{xy} for a given PPW solution."""
+        r"""Plot total xy-stress \sigma_{xy} for a given PPW solution."""
         # Get scattered psi at each obstacle
         sigma_xy_total, vmin, vmax = self.get_scalars_for_plotting(
             scalar_qoi=ScalarQOI.STRESS_XY,
@@ -563,7 +563,7 @@ class ScatteringProblemPlotter:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot scattered xy-stress \sigma_{xy} for a given PPW solution."""
+        r"""Plot scattered xy-stress \sigma_{xy} for a given PPW solution."""
         # Get scattered psi at each obstacle
         sigma_xy_scattered, vmin, vmax = self.get_scalars_for_plotting(
             scalar_qoi=ScalarQOI.STRESS_XY,
@@ -597,7 +597,7 @@ class ScatteringProblemPlotter:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot total yy-stress \sigma_{yy} for a given PPW solution."""
+        r"""Plot total yy-stress \sigma_{yy} for a given PPW solution."""
         # Get scattered stress at each obstacle
         sigma_yy_total, vmin, vmax = self.get_scalars_for_plotting(
             scalar_qoi=ScalarQOI.STRESS_YY,
@@ -631,7 +631,7 @@ class ScatteringProblemPlotter:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot scattered yy-stress \sigma_{yy} for a given PPW solution."""
+        r"""Plot scattered yy-stress \sigma_{yy} for a given PPW solution."""
         # Get scattered stress at each obstacle
         sigma_yy_scattered, vmin, vmax = self.get_scalars_for_plotting(
             scalar_qoi=ScalarQOI.STRESS_YY,

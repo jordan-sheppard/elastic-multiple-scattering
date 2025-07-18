@@ -532,7 +532,7 @@ class ElasticPolarFarfieldEvaluator:
         g_angular_coeffs: np.ndarray,
         boundary_only: bool
     ) -> np.ndarray:
-        """Evaluates the sum 
+        r"""Evaluates the sum 
         \sum_{l=0}^{L-1} (Rf[l,i,j] Af[i,j,l] + Rg[l,i,j] Ag[i,j,l])
         at every gridpoint of the stored (mbar)-local grid, where:
         

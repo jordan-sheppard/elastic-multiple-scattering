@@ -2058,7 +2058,7 @@ class Circular_MKFE_FDObstacle(MKFE_FDObstacle):
 
 
     def _get_recursion_relation_rows(self) -> list[sparse.csc_array]:
-        """Gets rows/equations in the finite-difference matrix
+        r"""Gets rows/equations in the finite-difference matrix
         corresponding to the recursive relationships between 
         angular coefficients.
 
