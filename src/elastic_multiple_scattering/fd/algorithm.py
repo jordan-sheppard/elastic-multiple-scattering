@@ -470,12 +470,12 @@ class ScatteringConvergenceAnalyzerPolar:
             # Display phi/psi convergence plots
             self._draw_convergence_plots(
                 convergence_rates=self.phi_rates,
-                quantity='$\phi$',
+                quantity=r'$\phi$',
                 folder=plots_folderpath
             )
             self._draw_convergence_plots(
                 convergence_rates=self.psi_rates,
-                quantity='$\psi$',
+                quantity=r'$\psi$',
                 folder=plots_folderpath
             )
 
