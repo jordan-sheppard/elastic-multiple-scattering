@@ -10,9 +10,7 @@ from tabulate import tabulate
 import sys  
 import os 
 import re
-import tracemalloc
 import gc 
-from memory_profiler import profile
 
 from ..base.medium import LinearElasticMedium
 from ..base.waves import IncidentPlanePWave
@@ -472,12 +470,12 @@ class ScatteringConvergenceAnalyzerPolar:
             # Display phi/psi convergence plots
             self._draw_convergence_plots(
                 convergence_rates=self.phi_rates,
-                quantity='$\phi$',
+                quantity=r'$\phi$',
                 folder=plots_folderpath
             )
             self._draw_convergence_plots(
                 convergence_rates=self.psi_rates,
-                quantity='$\psi$',
+                quantity=r'$\psi$',
                 folder=plots_folderpath
             )
 
@@ -1426,7 +1424,7 @@ class MKFE_FD_ScatteringProblem:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot total xx-stress \sigma_{xx} for a given PPW solution."""
+        r"""Plot total xx-stress \sigma_{xx} for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
@@ -1466,7 +1464,7 @@ class MKFE_FD_ScatteringProblem:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot scattered xx-stress \sigma_{xx} for a given PPW solution."""
+        r"""Plot scattered xx-stress \sigma_{xx} for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
@@ -1506,7 +1504,7 @@ class MKFE_FD_ScatteringProblem:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot total xy-stress \sigma_{xy} for a given PPW solution."""
+        r"""Plot total xy-stress \sigma_{xy} for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
@@ -1546,7 +1544,7 @@ class MKFE_FD_ScatteringProblem:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot scattered xy-stress \sigma_{xy} for a given PPW solution."""
+        r"""Plot scattered xy-stress \sigma_{xy} for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
@@ -1586,7 +1584,7 @@ class MKFE_FD_ScatteringProblem:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot total yy-stress \sigma_{yy} for a given PPW solution."""
+        r"""Plot total yy-stress \sigma_{yy} for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
@@ -1626,7 +1624,7 @@ class MKFE_FD_ScatteringProblem:
         complex_array_quantity:ComplexArrayQuantity,
         plot_folder: Optional[str] = None 
     ) -> None:
-        """Plot scattered yy-stress \sigma_{yy} for a given PPW solution."""
+        r"""Plot scattered yy-stress \sigma_{yy} for a given PPW solution."""
         if PPW not in self.obstacles:
             raise ValueError(f"Error: No solution exists for PPW={PPW}")
         
