@@ -10,9 +10,7 @@ from tabulate import tabulate
 import sys  
 import os 
 import re
-import tracemalloc
 import gc 
-from memory_profiler import profile
 
 from ..base.medium import LinearElasticMedium
 from ..base.waves import IncidentPlanePWave
