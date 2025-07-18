@@ -22,8 +22,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install tomli-w
-        run: pip install tomli-w
+      - name: Install tomlkit
+        run: pip install tomlkit
 
       - name: Set up Git
         run: |
