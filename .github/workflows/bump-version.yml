@@ -71,7 +71,7 @@ jobs:
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v5
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
           commit-message: "🔖 Bump version to v${{ github.event.inputs.version }}"
           branch: bump-version-${{ github.event.inputs.version }}
           title: "Bump version to v${{ github.event.inputs.version }}"
