@@ -177,6 +177,601 @@ class InterpolatedGridFunction:
         self.d2f = d2f
 
 
+class ElasticFarfieldEvaluator:
+    """A class for evaluating truncated farfield expansions
+    for the scattered wave outgoing from an obstacle (m)
+    at any gridpoints exterior to its artificial boundary"""
+    def __init__(
+        self,
+        source_local_grid: FDLocalPolarGrid,
+        dest_X: np.ndarray,
+        dest_Y: np.ndarray,
+        medium: LinearElasticMedium,
+        num_farfield_terms: int
+    ) -> None:
+        """Initializes the grid of interest to evaluate
+        coefficients on, as well as other needed constants.
+        
+        Args:
+            source_local_grid (FDLocalPolarGrid): The local polar
+                grid at obstacle (m) (where the scattered wave
+                is eminating from)
+            dest_X (np.ndarray): The x-gridpoints to evaluate
+                the farfield expansion at 
+            dest_Y (np.ndarray): The y-gridpoints to evaluate
+                the farfield expansion at 
+            medium (LinearElasticMedium): The linear elastic medium
+                where this wave is propagating
+            num_farfield_terms (int): The number of terms to use
+                in the truncated farfield expansion eminating 
+                from this obstacle
+        """
+        # Store mbar-local grid for wave evaluation in various coordinate systems:
+        self.R_m, self.Theta_m = source_local_grid.global_XY_to_local_coords(dest_X, dest_Y)
+        self.R_global = np.sqrt(dest_X**2 + dest_Y**2)          # Global polar coordinates  
+        self.Theta_global = np.atan2(dest_Y, dest_X)                                                  
+        self.X_global, self.Y_global = dest_X, dest_Y           # Global cartesian coordinates
+
+        # Parse m-local radius of obstale m artificial boundary C^m
+        self.R_artificial_boundary_m = source_local_grid.r_vals[-1]      # Assumes artificial boundary is the final physical gridpoint
+
+        # Validate all gridpoints at destination (m) grid 
+        # are outside of computational domain for source (mbar) obstacle 
+        self.points_to_include_mask = (self.R_m > self.R_artificial_boundary_m)
+    
+        # Store medium attributes 
+        self.kp = medium.kp
+        self.ks = medium.ks
+        self.lam = medium.lam 
+        self.mu = medium.mu
+
+        # Store truncation attributes 
+        self.num_farfield_terms = num_farfield_terms
+
+        # Create interpolator for all mbar-local farfield coefficients
+        # defined at the provided mbar-local angular gridpoint values
+        self.angle_interpolator = PeriodicInterpolator1D(
+            periodic_domain=(0., 2*np.pi),
+            xi=source_local_grid.theta_vals
+        )
+
+        # Initialize all radial coefficients 
+        self._initialize_radial_coeffs()
+
+
+    def _initialize_radial_coeffs(self) -> None:
+        """Initialize all farfield radial coefficients from obstacle
+        (m) onto the (mbar)-local grid of interest.
+        """
+        ## Get repeated constants (use array broadcasting)
+        # I) Gridpoint-based arrays (that is,evaluated at each [j,i]
+        #    gridpoint of mbar-local grid. Should each have shape
+        #    (N_{theta}^{m}, N_r^{m})
+        radius_ratios = self.R_artificial_boundary_m / self.R_m
+        radius_ratios[~self.points_to_include_mask] = 0
+        kpR = self.kp * self.R_m
+        kpR[~self.points_to_include_mask] = 0
+        ksR = self.ks * self.R_m
+        ksR[~self.points_to_include_mask] = np.inf
+        Hp0 = hankel1(0, kpR)
+        Hp1 = hankel1(1, kpR)
+        Hs0 = hankel1(0, ksR) 
+        Hs1 = hankel1(1, ksR)
+
+        # II) Sum index (l)-based arrays (that is, evaluated at each [l]
+        #     index value of l=0,1,...,L-1)
+        l = np.arange(self.num_farfield_terms)[:,np.newaxis,np.newaxis]      # l = 0, 1, ..., L-1; shape (L,1,1)
+        ratio_pow = (radius_ratios)**l
+
+        ## Get radial farfield coefficients
+        # I) Radial cefficients at other obstacle's gridpoints
+        # NOTE: All of these will have shape (L, N_{theta}^{m}, N_r^{m})
+        self.V_p = ratio_pow * Hp0
+        self.V_s = ratio_pow * Hs0
+        self.W_p = ratio_pow * Hp1 
+        self.W_s = ratio_pow * Hs1
+        self.A_p = -self.kp * ratio_pow * (Hp1 + (l * Hp0)/kpR)
+        self.A_p[:,~self.points_to_include_mask] = 0
+        self.A_s = -self.ks * ratio_pow * (Hs1 + (l * Hs0)/ksR)
+        self.A_s[:,~self.points_to_include_mask] = 0
+        self.B_p = -self.kp * ratio_pow * (-Hp0 + ((l+1) * Hp1)/kpR)
+        self.B_p[:,~self.points_to_include_mask] = 0
+        self.B_s = -self.ks * ratio_pow * (-Hs0 + ((l+1) * Hs1)/ksR)
+        self.B_s[:,~self.points_to_include_mask] = 0
+        self.C_p = self.kp**2 * ratio_pow * (
+                -Hp0 + ((2*l + 1) * Hp1)/kpR + (l*(l+1)*Hp0)/(kpR**2)
+        )
+        self.C_p[:,~self.points_to_include_mask] = 0
+        self.C_s = self.ks**2 * ratio_pow * (
+            -Hs0 + ((2*l + 1) * Hs1)/ksR + (l*(l+1)*Hs0)/(ksR**2)
+        )
+        self.C_s[:,~self.points_to_include_mask] = 0
+        self.D_p =  self.kp**2 * ratio_pow * (
+            -Hp1 - ((2*l + 1) * Hp0)/kpR + ((l+2)*(l+1)*Hp1)/(kpR**2)
+        )
+        self.D_p[:,~self.points_to_include_mask] = 0
+        self.D_s = self.ks**2 * ratio_pow * (
+            -Hs1 - ((2*l + 1) * Hs0)/ksR + ((l+2)*(l+1)*Hs1)/(ksR**2)
+        )
+        self.D_s[:,~self.points_to_include_mask] = 0
+    
+    def _interpolate_angular_coeffs(
+        self,
+        coeffs: np.ndarray
+    ) -> InterpolatedGridFunction:
+        """Interpolates a set of discretized angular coefficients 
+        defined at each of the m-local angular gripoints with a 
+        5th-degree polynomial, and evaluates that polynomial at 
+        each of the m-bar gridpoints on this object's mbar-local
+        grid of interest.
+        
+        Args:
+            coeffs (np.ndarray) - A shape 
+                (N_{theta}^{mbar}, L) array whose
+                [j,l] entry is the value of the l'th Farfield coefficient
+                of interest at the m-local angular gridpoint (theta_m)_j. 
+
+        Returns:
+            InterpolatedGridFunction - The interpolated coefficient (and 
+                angular derivative of coefficient) values on each 
+                of the gridpoints in this object's stored grid.
+        """
+        self.angle_interpolator.update_func_vals(coeffs)
+        coeff_vals = self.angle_interpolator.interpolate(self.Theta_m)            # Shape (N_{theta}^{mbar}, N_r^{mbar}, L)
+        d_coeff_vals = self.angle_interpolator.interpolate(self.Theta_m, der=1)   # Shape (N_{theta}^{mbar}, N_r^{mbar}, L)
+        d2_coeff_vals = self.angle_interpolator.interpolate(self.Theta_m, der=2)  # Shape (N_{theta}^{mbar}, N_r^{mbar}, L)
+
+        return InterpolatedGridFunction(
+            f=coeff_vals,
+            df=d_coeff_vals,
+            d2f=d2_coeff_vals
+        )
+
+
+    def update_angular_coeffs(
+        self,
+        angular_coeffs: FarfieldAngularCoefficients
+    ) -> None:
+        """Get updated m-local angular coefficients at each of the
+        gridpoints by 5th-degree Barycentric Lagrange interpolation.
+
+        All InterpolatedGridFunction objects for self.fp_coeffs,
+        self.gs_coeffs, etc. will have attributes, f, df, and d2f
+        populated with shape (N_{theta}^{mbar}, N_{r}^{mbar}, L) arrays 
+        of angular coefficients, where the [j,i,l] index is 
+        the angular coefficient evaluated at the (i,j) mbar-local
+        gridpoint, at farfield sum index l:
+        C_{m,l} ( (r_{mbar})_i , (theta_{mbar})_j )
+        
+        Args:
+            angular_coeffs (FarfieldAngularCoefficients): An object
+                containing obstacle m's angular farfield
+                coefficient values at each of obstacle m's local
+                angular gridpoint values. Each of the four
+                coefficient arrays should be have shape
+                (N_{theta}^{mbar}, L).
+        """
+        # Get all 4 sets of farfield coefficients on the mbar grid of interest
+        self.fp_coeffs = self._interpolate_angular_coeffs(angular_coeffs.fp_coeffs)
+        self.gp_coeffs = self._interpolate_angular_coeffs(angular_coeffs.gp_coeffs)
+        self.fs_coeffs = self._interpolate_angular_coeffs(angular_coeffs.fs_coeffs)
+        self.gs_coeffs = self._interpolate_angular_coeffs(angular_coeffs.gs_coeffs)
+
+
+    def _product_sum_coeffs(
+        self,
+        f_radial_coeffs: np.ndarray,
+        g_radial_coeffs: np.ndarray,
+        f_angular_coeffs: np.ndarray,
+        g_angular_coeffs: np.ndarray
+    ) -> np.ndarray:
+        r"""Evaluates the sum 
+        \sum_{l=0}^{L-1} (Rf[l,i,j] Af[i,j,l] + Rg[l,i,j] Ag[i,j,l])
+        at every gridpoint of the stored (mbar)-local grid, where:
+        
+        * (i,j) is the index of the (mbar)-local gridpoint of interest
+        * (l) is the index of the farfield coefficient in the above sum
+        * Rf is an array of radial coefficients multiplying the F_{m,l} 
+            angular coefficients and their derivatives 
+        * Af is an array of the F_{m,l} angular coefficients (or their 
+            derivatives)
+        * Rg is an array of radial coefficients multiplying  the G_{m,l} 
+            angular coefficients and their derivatives 
+        * Ag is an array of the G_{m,l} angular coefficients (or their 
+            derivatives)
+
+        (If only evaluating on the boundary, the index i will always
+        be 0)
+
+        Args:
+            f_radial_coeffs (np.ndarray): A shape (l,i,j) array
+                denoting the radial coefficients Rf in the above formula
+            g_radial_coeffs (np.ndarray): A shape (l,i,j) array
+                denoting the angular coefficients Rf in the above formula
+            f_angular_coeffs (np.ndarray): A shape (i,j,l) array
+                denoting the radial coefficients Rf in the above formula
+            g_angular_coeffs (np.ndarray): A shape (i,j,l) array
+                denoting the angular coefficients Rf in the above formula
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle mbar's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape (i,j) (or (j,) if boundary_only=True)
+                array of the above sum of products evaluated at each
+                [i,j] (or [j], respectively) (mbar)-local gridpoint.
+        """
+        f_terms = np.einsum('lij, ijl -> ij', f_radial_coeffs, f_angular_coeffs)
+        g_terms = np.einsum('lij, ijl -> ij', g_radial_coeffs, g_angular_coeffs)
+        return f_terms + g_terms
+
+
+    def Kp(self) -> np.ndarray:
+        """Evaluates the compressional K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored m-local grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle m's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
+                [j,i] (or [j], respectively) entry contains the value
+                of the compressional farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
+                gridpoint):
+                K_{mbar,L}^p ( r_{m}[i], theta_{m}[j] )
+                (or K_{mbar,L}^p ( r_0^{m}, theta_{m}[j] ) )
+        """
+        return self._product_sum_coeffs(
+            f_radial_coeffs=self.V_p,
+            g_radial_coeffs=self.W_p,
+            f_angular_coeffs=self.fp_coeffs.f,
+            g_angular_coeffs=self.gp_coeffs.f
+        )
+    
+
+    def Ks(self) -> np.ndarray:
+        """Evaluates the shear K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored m-local grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle m's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
+                [j,i] (or [j], respectively) entry contains the value
+                of the shear farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
+                gridpoint):
+                K_{mbar,L}^s ( r_{m}[i], theta_{m}[j] )
+                (or K_{mbar,L}^s ( r_0^{m}, theta_{m}[j] ) )
+        """
+        return self._product_sum_coeffs(
+            f_radial_coeffs=self.V_s,
+            g_radial_coeffs=self.W_s,
+            f_angular_coeffs=self.fs_coeffs.f,
+            g_angular_coeffs=self.gs_coeffs.f
+        )
+    
+
+    def dr_Kp(self) -> np.ndarray:
+        """Evaluates the 1st (mbar)-local radial derivative 
+        of the compressional K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored mbar-local grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle m's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
+                [j,i] (or [j], respectively) entry contains the value
+                of the 1st (mbar)-local radial derivative of 
+                the compressional farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
+                gridpoint):
+                dr_{mbar} K_{mbar,L}^p ( r_{m}[i], theta_{m}[j] )
+                (or dr_{mbar} K_{mbar,L}^p ( r_0^{m}, theta_{m}[j] ) )
+        """
+        return self._product_sum_coeffs(
+            f_radial_coeffs=self.A_p,
+            g_radial_coeffs=self.B_p,
+            f_angular_coeffs=self.fp_coeffs.f,
+            g_angular_coeffs=self.gp_coeffs.f
+        )
+
+
+    def dr_Ks(self) -> np.ndarray:
+        """Evaluates the 1st (mbar)-local radial derivative 
+        of the shear K_{mbar,L}^s farfield expansion
+        at each gridpoint of the stored mbar-local grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle m's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
+                [j,i] (or [j], respectively) entry contains the value
+                of the 1st (mbar)-local radial derivative of 
+                the shear farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
+                gridpoint):
+                dr_{mbar} K_{mbar,L}^s ( r_{m}[i], theta_{m}[j] )
+                (or dr_{mbar} K_{mbar,L}^s ( r_0^{m}, theta_{m}[j] ) )
+        """
+        return self._product_sum_coeffs(
+            f_radial_coeffs=self.A_s,
+            g_radial_coeffs=self.B_s,
+            f_angular_coeffs=self.fs_coeffs.f,
+            g_angular_coeffs=self.gs_coeffs.f
+        )
+    
+
+    def dtheta_Kp(self) -> np.ndarray:
+        """Evaluates the 1st (mbar)-local angular derivative 
+        of the compressional K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored m-local grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle m's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
+                [j,i] (or [j], respectively) entry contains the value
+                of the 1st (mbar)-local angular derivative of 
+                the compressional farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
+                gridpoint):
+                dtheta_{mbar} K_{mbar,L}^p ( r_{m}[i], theta_{m}[j] )
+                (or dtheta_{mbar} K_{mbar,L}^p ( r_0^{m}, theta_{m}[j] ) )
+        """
+        return self._product_sum_coeffs(
+            f_radial_coeffs=self.V_p,
+            g_radial_coeffs=self.W_p,
+            f_angular_coeffs=self.fp_coeffs.df,
+            g_angular_coeffs=self.gp_coeffs.df
+        )
+    
+
+    def dtheta_Ks(self) -> np.ndarray:
+        """Evaluates the 1st (mbar)-local angular derivative 
+        of the shear K_{mbar,L}^s farfield expansion
+        at each gridpoint of the stored m-local grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle m's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
+                [j,i] (or [j], respectively) entry contains the value
+                of the 1st (mbar)-local angular derivative of 
+                the shearl farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
+                gridpoint):
+                dtheta_{mbar} K_{mbar,L}^s ( r_{m}[i], theta_{m}[j] )
+                (or dtheta_{mbar} K_{mbar,L}^s ( r_0^{m}, theta_{m}[j] ) )
+        """
+        return self._product_sum_coeffs(
+            f_radial_coeffs=self.V_s,
+            g_radial_coeffs=self.W_s,
+            f_angular_coeffs=self.fs_coeffs.df,
+            g_angular_coeffs=self.gs_coeffs.df
+        )
+    
+
+    def d2r_Kp(self) -> np.ndarray:
+        """Evaluates the 2nd (mbar)-local radial derivative 
+        of the compressional K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored m-local grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle m's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
+                [j,i] (or [j], respectively) entry contains the value
+                of the 2nd (mbar)-local radial derivative of 
+                the compressional farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
+                gridpoint):
+                dr_{mbar}^2 K_{mbar,L}^p ( r_{m}[i], theta_{m}[j] )
+                (or dr_{mbar}^2 K_{mbar,L}^p( r_0^{m}, theta_{m}[j] ) )
+        """
+        return self._product_sum_coeffs(
+            f_radial_coeffs=self.C_p,
+            g_radial_coeffs=self.D_p,
+            f_angular_coeffs=self.fp_coeffs.f,
+            g_angular_coeffs=self.gp_coeffs.f
+        )
+
+
+    def d2r_Ks(self) -> np.ndarray:
+        """Evaluates the 2nd (mbar)-local radial derivative 
+        of the shear K_{mbar,L}^s farfield expansion
+        at each gridpoint of the stored m-local grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle m's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
+                [j,i] (or [j], respectively) entry contains the value
+                of the 2nd (mbar)-local radial derivative of 
+                the shear farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
+                gridpoint):
+                dr_{mbar}^2 K_{mbar,L}^s ( r_{m}[i], theta_{m}[j] )
+                (or dr_{mbar}^2 K_{mbar,L}^s ( r_0^{m}, theta_{m}[j] ) )
+        """
+        return self._product_sum_coeffs(
+            f_radial_coeffs=self.C_s,
+            g_radial_coeffs=self.D_s,
+            f_angular_coeffs=self.fs_coeffs.f,
+            g_angular_coeffs=self.gs_coeffs.f
+        )
+    
+
+    def d2theta_Kp(self) -> np.ndarray:
+        """Evaluates the 2nd (mbar)-local angular derivative 
+        of the compressional K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored m-local grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle m's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape ((N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
+                [j,i] (or [j], respectively) entry contains the value
+                of the 2nd (mbar)-local angular derivative of 
+                the compressional farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
+                gridpoint):
+                dtheta_{mbar}^2 K_{mbar,L}^p ( r_{m}[i], theta_{m}[j] )
+                (or dtheta_{mbar}^2 K_{mbar,L}^p( r_0^{m}, theta_{m}[j] ) )
+        """
+        return self._product_sum_coeffs(
+            f_radial_coeffs=self.V_p,
+            g_radial_coeffs=self.W_p,
+            f_angular_coeffs=self.fp_coeffs.d2f,
+            g_angular_coeffs=self.gp_coeffs.d2f
+        )
+    
+
+    def d2theta_Ks(self) -> np.ndarray:
+        """Evaluates the 2nd (mbar)-local angular derivative 
+        of the shear K_{mbar,L}^s farfield expansion
+        at each gridpoint of the stored m-local grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle m's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
+                [j,i] (or [j], respectively) entry contains the value
+                of the 2nd (mbar)-local angular derivative of 
+                the shear farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
+                gridpoint):
+                dtheta_{mbar}^2 K_{mbar,L}^s ( r_{m}[i], theta_{m}[j] )
+                (or dtheta_{mbar}^2 K_{mbar,L}^s ( r_0^{m}, theta_{m}[j] ) )
+        """
+        return self._product_sum_coeffs(
+            f_radial_coeffs=self.V_s,
+            g_radial_coeffs=self.W_s,
+            f_angular_coeffs=self.fs_coeffs.d2f,
+            g_angular_coeffs=self.gs_coeffs.d2f
+        )
+    
+
+    def dr_dtheta_Kp(self) -> np.ndarray:
+        """Evaluates the 2nd mixed (mbar)-local radial/angular derivative 
+        of the compressional K_{mbar,L}^p farfield expansion
+        at each gridpoint of the stored m-local grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle m's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
+                [j,i] (or [j], respectively) entry contains the value
+                of the 2nd mixed (mbar)-local radial/angular derivative of 
+                the compressional farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
+                gridpoint):
+                dr_{mbar} dtheta_{mbar} K_{mbar,L}^p ( r_{m}[i], theta_{m}[j] )
+                (or dr_{mbar} dtheta_{mbar} K_{mbar,L}^p ( r_0^{m}, theta_{m}[j] ) )
+        """
+        return self._product_sum_coeffs(
+            f_radial_coeffs=self.A_p,
+            g_radial_coeffs=self.B_p,
+            f_angular_coeffs=self.fp_coeffs.df,
+            g_angular_coeffs=self.gp_coeffs.df
+        )
+    
+
+    def dr_dtheta_Ks(self) -> np.ndarray:
+        """Evaluates the 2nd mixed (mbar)-local radial/angular derivative 
+        of the shear K_{mbar,L}^s farfield expansion
+        at each gridpoint of the stored m-local grid.
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle m's grid. Defaults to False.
+        
+        Returns:
+            np.ndarray: A shape (N_{theta}^{m}, N_{r}^{m}) array (or
+                shape (N_{theta}^{m},) array if on boundary) whose
+                [j,i] (or [j], respectively) entry contains the value
+                of the 2nd mixed (mbar)-local radial/angular derivative of 
+                the shear farfield expansion at the (i,j)
+                m-local gridpoint (or (j) m-local angular
+                gridpoint):
+                dr_{mbar} dtheta_{mbar} K_{mbar,L}^s ( r_{m}[i], theta_{m}[j] )
+                (or dr_{mbar} dtheta_{mbar} K_{mbar,L}^s ( r_0^{m}, theta_{m}[j] ) )
+        """
+        return self._product_sum_coeffs(
+            f_radial_coeffs=self.A_s,
+            g_radial_coeffs=self.B_s,
+            f_angular_coeffs=self.fs_coeffs.df,
+            g_angular_coeffs=self.gs_coeffs.df
+        )
+
+    def potentials(self) -> np.ndarray:
+        """Return the interpolated K_{mbar,L}^p and K_{mbar,L}^s potentials
+        at each gridpoint of the (m)-local grid of interest. 
+
+        Args:
+            boundary_only (bool): Whether or not to only return
+                the gridpoints on the physical (i=0) boundary
+                of obstacle mbar's grid. Defaults to False.
+
+        Returns:
+            np.ndarray: A shape (N_{theta}^{mbar}, N_r^{mbar},  2) (or
+                (N_{theta}^{mbar}, 2) array if boundary_only=True), where
+                the [:,:,0] (or [:,0], respectively) slice carries
+                the interpolated K_{mbar,L}^p (phi_{mbar}) potential values, and the 
+                [:,:,1] ([:,1], respectively) slice carries the
+                interpolated K_{mbar,L}^s (psi_{mbar}) potential values.
+        """
+        Kp_vals = self.Kp()
+        Ks_vals = self.Ks()
+        return np.stack((Kp_vals, Ks_vals), axis=-1) 
+    
+
+
 class ElasticPolarFarfieldEvaluator:
     """A class for evaluating the two truncated farfield
     expansions for the scattered wave outgoing from an obstacle (m)

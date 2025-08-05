@@ -156,3 +156,31 @@ class FDLocalPolarGrid(FDPolarGrid_ArtBndry):
         local_r = np.sqrt(local_x**2 + local_y**2)
         local_theta = np.atan2(local_y, local_x)
         return local_r, local_theta
+    
+
+    
+class CartesianGrid(BaseGrid):
+    def __init__(self, X_global, Y_global):
+        self.X_global = X_global
+        self.Y_global = Y_global 
+
+    @property
+    def shape(self):
+        return self.X_global.shape 
+    
+    @property
+    def num_gridpoints(self):
+        return self.X_global.shape[0] * self.X_global.shape[1]
+
+    def local_coords_to_global_XY(self, indexes = None):
+        if indexes is None:
+            return self.X_global, self.Y_global 
+        else:
+            return self.X_global[indexes], self.Y_global[indexes]
+        
+    
+    def global_XY_to_local_coords(self,
+        global_X: Grid,
+        global_Y: Grid
+    ) -> tuple[Grid, Grid]:
+        return global_X, global_Y   # Translation invariance!
