@@ -21,7 +21,8 @@ from ..base.waves import IncidentPlanePWave
 from ..base.medium import LinearElasticMedium
 from .grids import FDLocalPolarGrid, FDPolarGrid_ArtBndry
 from .coefficients import (
-    ElasticPolarFarfieldEvaluator, FarfieldAngularCoefficients
+    ElasticFarfieldEvaluator, ElasticPolarFarfieldEvaluator, 
+    FarfieldAngularCoefficients
 )
 from .waves import IncidentPlanePWaveEvaluator
 from .solvers import FDSolver
@@ -1078,6 +1079,18 @@ class MKFE_FDObstacle(FDObstacle):
         else:
             raise ValueError("desired_quantity must be a QOI Enum value (POTENTIALS, DISPLACEMENT, or STRESS)")
     
+    def get_scattered_potentials_on_exterior_grid(
+        self,
+        X_global: np.ndarray,
+        Y_global: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Get the scattered potentials phi and psi on a given exterior grid"""
+        evaluator = ElasticFarfieldEvaluator(
+            self.grid, X_global, Y_global, self.parent_medium, self.num_farfield_terms
+        )
+        evaluator.update_angular_coeffs(self.farfield_coeffs)
+        return evaluator.potentials()
+
 
 
 class Circular_MKFE_FDObstacle(MKFE_FDObstacle):

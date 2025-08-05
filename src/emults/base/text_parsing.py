@@ -1,5 +1,7 @@
 from typing import Optional
 import os 
+import sys
+import contextlib
 
 def get_filename_base(
     file: str
@@ -31,3 +33,24 @@ def get_full_configuration_filename_base(
         return f"scattering_{obstacle_label}_{medium_label}_{numerical_label}_REFERENCE_{reference_label}"
     else:
         return f"scattering_{obstacle_label}_{medium_label}_{numerical_label}_NOREFERENCE"
+
+@contextlib.contextmanager
+def print_redirector(file_path=None, mode='w'):
+    """
+    A context manager to redirect print statements to a file or stdout.
+
+    Args:
+        file_path (str, optional): The path to the file for output.
+                                   If None, output goes to stdout.
+    """
+    original_stdout = sys.stdout
+    file_handle = None
+    try:
+        if file_path:
+            file_handle = open(file_path, mode)
+            sys.stdout = file_handle
+        yield
+    finally:
+        sys.stdout = original_stdout
+        if file_handle:
+            file_handle.close()

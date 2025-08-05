@@ -350,34 +350,38 @@ class ScatteringConvergenceAnalyzerPolar:
     ) -> None:
         """Displays a given convergence rate table for a given quantity"""
         mode = "a" if append else "w"       # Whether to write or append to file
-        output = open(file, mode) if file is not None else sys.stdout
-        with output as outfile:
-            sorted_obstacle_ids = sorted(convergence_rates.keys())
-            obstacle_table_headers = ["PPW", "h", "Grid Resolution", "L2 Error", "L2 Observed Order", "Relative L2 Error",  "Relative L2 Observed Order", "L-Infinity Error", "L-Infinity Observed Order"]
-            
-            print("\n===========================================================", file=output)
-            print(f"             CONVERGENCE ANALYSIS: {quantity}             ", file=output)
-            print("===========================================================\n", file=output)
-            
-            for obs_id in sorted_obstacle_ids:
-                convergence_rate = convergence_rates[obs_id]
-                table = [
-                    [PPW, h, f"{resolution[0]} x {resolution[1]}", L2, L2_order, L2rel, L2rel_order, Linfty, Linfty_order]
-                    for PPW, h, resolution, L2, L2_order, L2rel, L2rel_order, Linfty, Linfty_order in zip(
-                        self.PPWs, convergence_rate.h, convergence_rate.grid_resolutions,
-                        convergence_rate.L2_errs, convergence_rate.L2_rates,
-                        convergence_rate.L2_relative_errs, convergence_rate.L2_relative_rates,
-                        convergence_rate.Linfty_errs, convergence_rate.Linfty_rates
-                    )
-                ]
-                print(f"\n---------------- OBSTACLE {obs_id} ----------------\n", file=output)
-                print(
-                    tabulate(
-                        table,
-                        headers=obstacle_table_headers,
-                        tablefmt=fmt
-                    ), file=output
+        if file is not None:
+            with open(file, mode) as outfile:
+                self._write_convergence_tables(outfile, convergence_rates, quantity, fmt)
+        else:
+            self._write_convergence_tables(sys.stdout, convergence_rates, quantity, fmt)
+
+    def _write_convergence_tables(self, output, convergence_rates, quantity, fmt):
+        sorted_obstacle_ids = sorted(convergence_rates.keys())
+        obstacle_table_headers = ["PPW", "h", "Grid Resolution", "L2 Error", "L2 Observed Order", "Relative L2 Error",  "Relative L2 Observed Order", "L-Infinity Error", "L-Infinity Observed Order"]
+        print("\n===========================================================", file=output)
+        print(f"             CONVERGENCE ANALYSIS: {quantity}             ", file=output)
+        print("===========================================================\n", file=output)
+        
+        for obs_id in sorted_obstacle_ids:
+            convergence_rate = convergence_rates[obs_id]
+            table = [
+                [PPW, h, f"{resolution[0]} x {resolution[1]}", L2, L2_order, L2rel, L2rel_order, Linfty, Linfty_order]
+                for PPW, h, resolution, L2, L2_order, L2rel, L2rel_order, Linfty, Linfty_order in zip(
+                    self.PPWs, convergence_rate.h, convergence_rate.grid_resolutions,
+                    convergence_rate.L2_errs, convergence_rate.L2_rates,
+                    convergence_rate.L2_relative_errs, convergence_rate.L2_relative_rates,
+                    convergence_rate.Linfty_errs, convergence_rate.Linfty_rates
                 )
+            ]
+            print(f"\n---------------- OBSTACLE {obs_id} ----------------\n", file=output)
+            print(
+                tabulate(
+                    table,
+                    headers=obstacle_table_headers,
+                    tablefmt=fmt
+                ), file=output
+            )
 
     def _draw_convergence_plots(
         self,
@@ -393,7 +397,7 @@ class ScatteringConvergenceAnalyzerPolar:
                 plt.savefig(figure_path)
                 plt.clf()
             else:
-                plt.plot()
+                plt.show()
         
         quantity_no_latex_formatting = re.sub(r'[$\\]', '', quantity)   # For figure saving filename purposes
 
@@ -515,7 +519,9 @@ class MKFE_FD_ScatteringProblem:
         obstacle_config_file: str,
         medium_config_file: str,
         numerical_config_file: str,
-        reference_config_file: Optional[str] = None
+        reference_config_file: Optional[str] = None,
+        reference_cache_folder: Optional[str] = None,
+        normal_cache_folder: Optional[str] = None
     ):
         """Initialize a multiple-scattering problem.
         
@@ -567,6 +573,18 @@ class MKFE_FD_ScatteringProblem:
             reference_config=reference_config_file
         )
         
+        if reference_cache_folder is None:
+            reference_cache_folder = 'cache/obstacles/reference'
+        if not os.path.isdir(reference_cache_folder):
+            os.makedirs(reference_cache_folder)
+        self.reference_cache_folder = reference_cache_folder
+
+        if normal_cache_folder is None:
+            normal_cache_folder = 'cache/obstacles/other'
+        if not os.path.isdir(normal_cache_folder):
+            os.makedirs(normal_cache_folder)
+        self.normal_cache_folder = normal_cache_folder
+
         # Get reference solution
         if reference_config_file is not None:
             self._get_reference_solution(reference_config_file)
@@ -707,24 +725,9 @@ class MKFE_FD_ScatteringProblem:
         """
         # Create cache directory for this setup if it hasn't already been created
         if reference:
-            cache_folder = os.path.join(
-                "results",
-                "solved_objects",
-                "obstacles",
-                self.obstacle_config_label,
-                self.medium_config_label,
-                f"farfield_{self.reference_num_farfield_terms}",
-            )
+            cache_folder = self.reference_cache_folder
         else:
-            cache_folder = os.path.join(
-                "results",
-                "solved_objects",
-                "obstacles",
-                self.obstacle_config_label,
-                self.medium_config_label,
-                f"farfield_{self.num_farfield_terms}",
-            )
-        os.makedirs(cache_folder, exist_ok=True)
+            cache_folder = self.normal_cache_folder
 
         # Now, cache this obstacle setup if it doesn't exist 
         cache_file = os.path.join(cache_folder, f"PPW_{PPW}.pickle")
@@ -742,22 +745,12 @@ class MKFE_FD_ScatteringProblem:
         (useful for distinguishing between reference and trial solutions)"""
         if reference:
             cache_file = os.path.join(
-                "results",
-                "solved_objects",
-                "obstacles",
-                self.obstacle_config_label,
-                self.medium_config_label,
-                f"farfield_{self.reference_num_farfield_terms}",
+                self.reference_cache_folder,
                 f"PPW_{PPW}.pickle"
             )
         else:
             cache_file = os.path.join(
-                "results",
-                "solved_objects",
-                "obstacles",
-                self.obstacle_config_label,
-                self.medium_config_label,
-                f"farfield_{self.num_farfield_terms}",
+                self.normal_cache_folder,
                 f"PPW_{PPW}.pickle"
             )
         if os.path.exists(cache_file):
@@ -906,7 +899,9 @@ class MKFE_FD_ScatteringProblem:
         self,
         algorithm: Algorithm,
         reference: bool = False,
-        pickle: bool = False
+        pickle: bool = False, 
+        pickle_folder: Optional[str] = None,
+        cache_all: bool = False
     ) -> None:
         """Solves the algorithm at the various PPW values given at initialization.
         Stores results from each PPW value in PPWs in self.obstacles[PPW].
@@ -916,7 +911,7 @@ class MKFE_FD_ScatteringProblem:
         """
         for PPW in self.PPWs:
             try:
-                self.solve_PPW(PPW, algorithm)
+                self.solve_PPW(PPW, algorithm, reference=False, cache=cache_all)
             except (AlgorithmDivergedException, MaxIterationsExceedException):
                 logging.exception(f"Saved PPW={PPW} at corrupted state. Continuing on with remaining PPWs...")
 
@@ -926,14 +921,14 @@ class MKFE_FD_ScatteringProblem:
 
         # If desired, pickle this object for further analysis
         if pickle:
-            if reference:
-                outfile_name = os.path.join("results", "solved_objects", "convergence_experiments", "reference", f"{self.problem_label}.pickle")
-                with open(outfile_name, 'wb') as outfile:
-                    cloudpickle.dump(self, outfile)
-            else:
-                outfile_name = os.path.join("results", "solved_objects", "convergence_experiments", "numerical", f"{self.problem_label}.pickle")
-                with open(outfile_name, 'wb') as outfile:
-                    cloudpickle.dump(self, outfile)
+            if pickle_folder is None:
+                pickle_folder = 'cache/simulation'
+            elif not os.path.isdir(pickle_folder):
+                os.makedirs(pickle_folder)
+
+            outfile_name = os.path.join(pickle_folder, f"{self.problem_label}.pickle")
+            with open(outfile_name, 'wb') as outfile:
+                cloudpickle.dump(self, outfile)
             
 
     def analyze_convergence(self) -> ScatteringConvergenceAnalyzerPolar:
