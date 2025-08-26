@@ -1,0 +1,6 @@
+{
+    "PPWs": [35, 40, 45, 50],
+    "num_farfield_terms": 15,
+    "tol": 1e-4,
+    "maxiter": 50
+}

@@ -1,0 +1,12 @@
+{
+    "medium": {
+        "nu": 0.3333333333333333,
+        "E": 1,
+        "lambda_s": 1.22,
+        "omega": 1
+    }, 
+    "incident_wave": {
+        "angle_of_inc": 0,
+        "wavenumber": 2.575075945565404
+    }
+}

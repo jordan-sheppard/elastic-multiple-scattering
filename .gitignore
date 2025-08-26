@@ -15,9 +15,6 @@ __pycache__/
 # Tmp directory 
 tmp
 
-# Experiments directory
-experiments
-
 # Distribution / packaging
 .Python
 build/

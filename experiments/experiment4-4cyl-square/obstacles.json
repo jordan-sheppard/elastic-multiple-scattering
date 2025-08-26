@@ -1,0 +1,30 @@
+{
+    "obstacles": {
+        "circular": [
+            {
+                "center": [0.0, 0.0],
+                "r_obstacle": 1.0,
+                "r_artificial_boundary": 2.0,
+                "bc": "HARD"
+            },
+            {
+                "center": [4.2, 0.0],
+                "r_obstacle": 1.0,
+                "r_artificial_boundary": 2.0,
+                "bc": "HARD"
+            },
+            {
+                "center": [0.0, 4.2],
+                "r_obstacle": 1.0,
+                "r_artificial_boundary": 2.0,
+                "bc": "HARD"
+            },
+            {
+                "center": [4.2, 4.2],
+                "r_obstacle": 1.0,
+                "r_artificial_boundary": 2.0,
+                "bc": "HARD"
+            }
+        ]
+    }
+}
